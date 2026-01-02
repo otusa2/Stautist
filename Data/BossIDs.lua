@@ -175,7 +175,15 @@ Stautist.BossDB[568] = { name = "Zul'Aman", type = "raid", tier = "TBC", texture
 }
 
 -- [TBC Dungeons]
-Stautist.BossDB[540] = { name = "Shattered Halls", type = "dungeon", tier="TBC", textureID = 540, end_boss_id = 16808, bosses = { [16807]="Grand Warlock Nethekurse", [16809]="Warbringer O'mrogg", [16808]="Warchief Kargath Bladefist" } }
+Stautist.BossDB[540] = { 
+    name = "Shattered Halls", type = "dungeon", tier="TBC", textureID = 540, end_boss_id = 16808, 
+    bosses = { 
+        [16807] = { name = "Grand Warlock Nethekurse", order = 1 },
+        [24891] = { name = "Blood Guard Porung", order = 2, heroicOnly = true }, -- Added Heroic Only
+        [16809] = { name = "Warbringer O'mrogg", order = 3 },
+        [16808] = { name = "Warchief Kargath Bladefist", order = 4 } 
+    } 
+}
 Stautist.BossDB[542] = { name = "Blood Furnace", type = "dungeon", tier="TBC", textureID = 542, end_boss_id = 17377, bosses = { [17381]="The Maker", [17380]="Broggok", [17377]="Keli'dan the Breaker" } }
 Stautist.BossDB[543] = { name = "Hellfire Ramparts", type = "dungeon", tier="TBC", textureID = 543, end_boss_id = 17537, bosses = { [17306]="Watchkeeper Gargolmar", [17308]="Omor the Unscarred", [17537]="Vazruden" } }
 Stautist.BossDB[555] = { name = "Shadow Labyrinth", type = "dungeon", tier="TBC", textureID = 555, end_boss_id = 18708, bosses = { [18731]="Ambassador Hellmaw", [18667]="Blackheart the Inciter", [18732]="Grandmaster Vorpil", [18708]="Murmur" } }
@@ -291,7 +299,16 @@ Stautist.BossDB[624] = { name = "Vault of Archavon", type = "raid", tier = "WotL
 Stautist.BossDB[601] = { name = "Azjol-Nerub", type = "dungeon", tier="WotLK", textureID = 601, end_boss_id = 29120, bosses = { [28684]="Krik'thir", [28921]="Hadronox", [29120]="Anub'arak" } }
 Stautist.BossDB[619] = { name = "Ahn'kahet", type = "dungeon", tier="WotLK", textureID = 619, end_boss_id = 29311, bosses = { [29309]="Elder Nadox", [29308]="Prince Taldaram", [29310]="Jedoga", [29311]="Herald Volazj", [30258]="Amanitar" } }
 Stautist.BossDB[600] = { name = "Drak'Tharon Keep", type = "dungeon", tier="WotLK", textureID = 600, end_boss_id = 26632, bosses = { [26630]="Trollgore", [26631]="Novos", [27483]="King Dred", [26632]="The Prophet Tharon'ja" } }
-Stautist.BossDB[604] = { name = "Gundrak", type = "dungeon", tier="WotLK", textureID = 604, end_boss_id = 29306, bosses = { [29304]="Slad'ran", [29305]="Moorabi", [29307]="Drakkari Colossus", [29306]="Gal'darah", [29932]="Eck" } }
+Stautist.BossDB[604] = { 
+    name = "Gundrak", type = "dungeon", tier="WotLK", textureID = 604, end_boss_id = 29306, 
+    bosses = { 
+        [29304] = { name = "Slad'ran", order = 1 },
+        [29305] = { name = "Moorabi", order = 2 },
+        [29307] = { name = "Drakkari Colossus", order = 3 },
+        [29932] = { name = "Eck the Ferocious", order = 3.5, heroicOnly = true }, -- Added Heroic Only
+        [29306] = { name = "Gal'darah", order = 4 }
+    } 
+}
 Stautist.BossDB[602] = { name = "Halls of Lightning", type = "dungeon", tier="WotLK", textureID = 602, end_boss_id = 28923, bosses = { [28586]="General Bjarngrim", [28587]="Volkhan", [28546]="Ionar", [28923]="Loken" } }
 Stautist.BossDB[599] = { name = "Halls of Stone", type = "dungeon", tier="WotLK", textureID = 599, end_boss_id = 27978, bosses = { [27975]="Maiden of Grief", [27977]="Krystallus", [27978]="Sjonnir The Ironshaper" } }
 Stautist.BossDB[576] = { name = "The Nexus", type = "dungeon", tier="WotLK", textureID = 576, end_boss_id = 26723, bosses = { [26731]="Grand Magus Telestra", [26763]="Anomalus", [26794]="Ormorok", [26723]="Keristrasza" } }
@@ -300,14 +317,14 @@ Stautist.BossDB[574] = { name = "Utgarde Keep", type = "dungeon", tier="WotLK", 
 Stautist.BossDB[575] = { name = "Utgarde Pinnacle", type = "dungeon", tier="WotLK", textureID = 575, end_boss_id = 26861, bosses = { [26668]="Svala Sorrowgrave", [26546]="Gortok", [26687]="Skadi", [26861]="King Ymiron" } }
 Stautist.BossDB[595] = { name = "Culling of Stratholme", type = "dungeon", tier="WotLK", textureID = 595, end_boss_id = 26521, bosses = { [26532]="Meathook", [26529]="Salramm", [26530]="Chrono-Lord Epoch", [26521]="Mal'Ganis" } }
 -- Violet Hold (Wave based, Cyanigosa is the end boss)
-Stautist.BossDB[608] = { name = "Violet Hold", type = "dungeon", tier="WotLK", textureID = 608, end_boss_id = 31134, 
+Stautist.BossDB[608] = { 
+    name = "Violet Hold", type = "dungeon", tier="WotLK", textureID = 608, end_boss_id = 31134, 
     bosses = { 
-        -- HUD SLOTS
         [900001] = { name="Portal Boss 1", encounter="vh_1", order=1 },
         [900002] = { name="Portal Boss 2", encounter="vh_2", order=2 },
-        [31134]  = { name="Cyanigosa", order=3 },
+        [31134]  = { name="Cyanigosa", order=3, heroicOnly = true }, -- Added Heroic Only per request
 
-        -- RANDOM POOL (Hidden)
+        -- Random Pool
         [29315] = { name="Erekem", hidden=true },
         [29316] = { name="Moragg", hidden=true },
         [29313] = { name="Ichoron", hidden=true },

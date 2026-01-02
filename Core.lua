@@ -41,6 +41,16 @@ if not L then
 end
 
 
+-- FAILSAFE: Safe Class Color Lookup
+function Stautist:SafeGetClassColor(class)
+    if not class or type(class) ~= "string" then return {r=0.5, g=0.5, b=0.5} end
+    local c = RAID_CLASS_COLORS[class:upper()]
+    if c then return c end
+    return {r=0.5, g=0.5, b=0.5} -- Grey fallback
+end
+
+
+
 
 -- FONT HELPER
 local FONT_MAIN = "Interface\\AddOns\\Stautist\\Fonts\\PTSans.ttf"
@@ -330,8 +340,10 @@ function Stautist:OnChatCommand(input)
     elseif cmd == "stop" then
         if self.StopRun then self:StopRun(false, "Manual") end
     elseif cmd == "show" then
+        self.db.char.active_run_state.user_hidden_hud = false -- Clear flag
         self:ShowHUD()
     elseif cmd == "hide" then
+        self.db.char.active_run_state.user_hidden_hud = true -- Set flag
         self:HideHUD()
     elseif cmd == "resethud" then
         self.db.profile.timer_pos = { a="CENTER", p="UIParent", x=0, y=200 }
@@ -342,9 +354,27 @@ function Stautist:OnChatCommand(input)
     elseif cmd == "id" then
         self:GetTargetID()
     elseif cmd == "debug" then
-            local zoneID = tonumber(arg) or 389 -- Default to Ragefire Chasm (389) if no arg
+            local zoneID = tonumber(arg) or 389 
             self:Print("|cffffff00[Debug Mode]|r Forcing run start for Zone ID: " .. zoneID)
             
+            -- FAILSAFE: Inject Mock Data into Real DB so Engine doesn't crash
+            if not self.BossDB[zoneID] then
+                self:Print("Zone ID not found. Injecting Mock Data...")
+                self.BossDB[zoneID] = {
+                    name = "Debug Zone " .. zoneID,
+                    tier = "Classic",
+                    type = "dungeon", -- Needed for filters
+                    textureID = nil,  -- Trigger fallback
+                    bosses = {
+                        [99901] = { name = "Test Boss A", order = 1 },
+                        [99902] = { name = "Test Boss B", order = 2 },
+                        [99903] = { name = "Test Boss C", order = 3 }
+                    }
+                }
+                -- Add to Name Map so other lookups work
+                if self.NAME_TO_ID then self.NAME_TO_ID["Debug Zone " .. zoneID] = zoneID end
+            end
+
             self.currentZoneID = zoneID
             self.debug_mode = true 
             
@@ -352,12 +382,8 @@ function Stautist:OnChatCommand(input)
             state.is_running = true
             state.zone_id = zoneID
             
-            -- Get Zone Data
             local zData = self.BossDB[zoneID]
-            local zName = zData and zData.name or "Debug Zone"
-            local zTier = zData and zData.tier or "Classic"
-            
-            state.zone_name = zName
+            state.zone_name = zData.name
             state.difficulty = "Normal"
             state.start_time = GetTime()
             state.boss_kills = {}
@@ -370,7 +396,6 @@ function Stautist:OnChatCommand(input)
             local bestTimeFound = nil
             local bestRun = nil
             
-            -- Try to find real PB
             if self.db.global.run_history then
                 for _, run in pairs(self.db.global.run_history) do
                     if run.zone_id == zoneID and run.difficulty == "Normal" and run.success then
@@ -381,32 +406,25 @@ function Stautist:OnChatCommand(input)
                 end
             end
 
-            -- NEW: If no PB exists, create a Fake one for Debugging
             if not bestRun then
                 self:Print("|cff00ccff[Debug]|r No PB found. Generating Mock PB for testing...")
                 bestRun = {
-                    total_time = 300, -- Fake 5 min run
+                    total_time = 300, 
                     boss_kills = {}
                 }
-                
-                -- Generate fake splits based on boss count
                 local count = 0
                 for _ in pairs(zData.bosses) do count = count + 1 end
                 local step = 300 / (count > 0 and count or 1)
                 
-                -- Sort bosses to assign logical times
                 local tempBosses = {}
                 for id, b in pairs(zData.bosses) do
                     local bOrder = (type(b)=="table" and b.order) or 50
-                    if zData.end_boss_id and id == zData.end_boss_id then bOrder = 100 end
                     table.insert(tempBosses, {id=id, order=bOrder})
                 end
                 table.sort(tempBosses, function(a,b) return a.order < b.order end)
 
                 for i, b in ipairs(tempBosses) do
-                    bestRun.boss_kills[b.id] = {
-                        split_time = step * i, 
-                    }
+                    bestRun.boss_kills[b.id] = { split_time = step * i }
                 end
             else
                 self:Print("PB Loaded for Debug Splits: " .. self:FormatTime(bestRun.total_time))
@@ -416,46 +434,37 @@ function Stautist:OnChatCommand(input)
             bestTimeFound = bestRun.total_time
             state.best_time_cache = bestTimeFound
 
-            -- 2. BUILD HUD (With Sorting)
-            if zData then
-                if self.ClearBossList then self:ClearBossList() end
-                
-                -- Sort Bosses
-                local bosses = {}
-                for npcID, data in pairs(zData.bosses) do
-                    local bName = (type(data)=="table" and data.name or data)
-                    local bOrder = 50
-                    if type(data) == "table" and data.order then
-                        bOrder = data.order
-                    elseif zData.end_boss_id and npcID == zData.end_boss_id then
-                        bOrder = 100 -- Force End Boss to bottom
-                    end
-                    table.insert(bosses, { id = npcID, name = bName, order = bOrder })
-                end
-                table.sort(bosses, function(a,b) return a.order < b.order end)
-
-                -- Add to HUD
-                for _, b in ipairs(bosses) do
-                    self:AddBossToList(b.id, b.name, b.order) -- PASS ORDER
-                end
-                
-                self:UpdateHUDHeight()
-                self:SetDungeonTitle(zName .. " (TEST)", false)
-                
-                -- Update Stats
-                if self.hudFrame then
-                    if self.hudFrame.timeToBeat then
-                        local btText = bestTimeFound and self:FormatTime(bestTimeFound) or "--:--"
-                        self.hudFrame.timeToBeat:SetText("PB: " .. btText)
-                    end
-                    -- Reset Wipes
-                    if self.UpdateHUDWipes then self:UpdateHUDWipes(0) end
-                    -- Ensure Layout
-                    if self.UpdateHUDLayout then self:UpdateHUDLayout() end
-                end
-                
-                self:ShowHUD()
+            -- 2. BUILD HUD
+            if self.ClearBossList then self:ClearBossList() end
+            
+            local bosses = {}
+            for npcID, data in pairs(zData.bosses) do
+                local bName = (type(data)=="table" and data.name or data)
+                local bOrder = (type(data)=="table" and data.order or 50)
+                table.insert(bosses, { id = npcID, name = bName, order = bOrder })
             end
+            table.sort(bosses, function(a,b) return a.order < b.order end)
+
+            for _, b in ipairs(bosses) do
+                self:AddBossToList(b.id, b.name, b.order)
+            end
+            
+            -- THIS LINE IS CRITICAL:
+            if self.SortBossRows then self:SortBossRows() end
+
+            self:UpdateHUDHeight()
+            self:SetDungeonTitle(state.zone_name .. " (TEST)", false)
+            
+            if self.hudFrame then
+                if self.hudFrame.timeToBeat then
+                    local btText = bestTimeFound and self:FormatTime(bestTimeFound) or "--:--"
+                    self.hudFrame.timeToBeat:SetText("PB: " .. btText)
+                end
+                if self.UpdateHUDWipes then self:UpdateHUDWipes(0) end
+                if self.UpdateHUDLayout then self:UpdateHUDLayout() end
+            end
+            
+            self:ShowHUD()
         elseif cmd == "fakekill" then
             local npcID = tonumber(arg)
             if npcID then
@@ -479,6 +488,7 @@ function Stautist:OnChatCommand(input)
             ReloadUI()
         end
     end
+
 
 
 
@@ -641,6 +651,9 @@ function Stautist:SwitchTab(tabName)
     end
 
     self.ConfigFrame.aceContainer:ReleaseChildren()
+    -- FAILSAFE: Clear references to old tab widgets so we don't update them later
+    self.lb_dropZone = nil
+    self.lb_scroll = nil
     
     if tabName == "General" then
         self:DrawGeneralContent(self.ConfigFrame.aceContainer)
@@ -1222,9 +1235,10 @@ function Stautist:CreateLeaderboardRow(container, rank, run)
 
         for _, cls in ipairs(CLASS_ORDER) do
             if counts[cls] and counts[cls] > 0 then
+                -- 1. Create the Icon
                 local icon = AceGUI:Create("Icon")
-                icon:SetImageSize(18, 18)
-                icon:SetWidth(24)
+                icon:SetImageSize(16, 16)
+                icon:SetWidth(20) -- Keep it tight
                 local coords = ICONS[cls]
                 if coords then
                     icon:SetImage("Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes", 
@@ -1232,22 +1246,29 @@ function Stautist:CreateLeaderboardRow(container, rank, run)
                 else
                     icon:SetImage("Interface\\Icons\\INV_Misc_QuestionMark")
                 end
-                if counts[cls] > 1 then
-                    icon:SetLabel(tostring(counts[cls]))
-                    icon:SetLabelFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
-                end
                 
-                -- Icon Tooltip
+                -- Tooltip Logic
                 icon:SetCallback("OnEnter", function(widget)
                     GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
                     GameTooltip:AddLine(names[cls], 1, 1, 1)
-                    GameTooltip:AddLine(" ")
-                    if run.wipes and run.wipes > 0 then GameTooltip:AddLine("Wipes: "..run.wipes, 1, 0.2, 0.2) end
-                    if run.partial then GameTooltip:AddLine("Progress: ".. (run.progress or "?"), 1, 0.8, 0) end
                     GameTooltip:Show()
                 end)
                 icon:SetCallback("OnLeave", HideTooltip)
+                
                 iconContainer:AddChild(icon)
+                
+                -- 2. If count > 1, add a separate Label NEXT to it
+                if counts[cls] > 1 then
+                    local countLbl = AceGUI:Create("Label")
+                    countLbl:SetText(tostring(counts[cls]))
+                    countLbl:SetWidth(10) -- Small width to stay inline
+                    countLbl:SetColor(1, 1, 1)
+                    
+                    -- Apply Font Helper if available, else standard
+                    if ApplyFont then ApplyFont(countLbl, 10) end
+                    
+                    iconContainer:AddChild(countLbl)
+                end
             end
         end
     else
@@ -1293,37 +1314,45 @@ end
 -- ============================================================================
 
 function Stautist:DrawSocialContent(container)
-    container:SetLayout("Flow") -- FIX: Ensure correct layout
+    container:SetLayout("Flow")
     
     local AceGUI = LibStub("AceGUI-3.0")
     
+    -- 1. HEADER (Search Box)
     local header = AceGUI:Create("SimpleGroup")
     header:SetFullWidth(true)
     header:SetLayout("Flow")
     container:AddChild(header)
 
-    -- Adjust spacers for visual centering (approx 25% left, 50% box, 25% right)
+    -- Centering Spacers
     local sp1 = AceGUI:Create("Label"); sp1:SetText(" "); sp1:SetRelativeWidth(0.25); header:AddChild(sp1)
 
     local searchBox = AceGUI:Create("EditBox")
     searchBox:SetLabel("Search Player")
-    searchBox:SetRelativeWidth(0.50) -- Wider and centered
+    searchBox:SetRelativeWidth(0.50)
     searchBox:DisableButton(true)
     searchBox:SetCallback("OnTextChanged", function(widget, _, text)
         self:RefreshSocialList(self.socialScroll, text)
     end)
-    ApplyFont(searchBox)
+    -- Apply Font if helper exists
+    if ApplyFont then ApplyFont(searchBox) end
     header:AddChild(searchBox)
     
     local sp2 = AceGUI:Create("Label"); sp2:SetText(" "); sp2:SetRelativeWidth(0.25); header:AddChild(sp2)
 
+    -- 2. SCROLL FRAME (The List)
     local scroll = AceGUI:Create("ScrollFrame")
-    scroll:SetLayout("Flow")
+    scroll:SetLayout("Flow") -- Essential for Grid
     scroll:SetFullWidth(true)
-    scroll:SetHeight(480)
+    
+    -- CRITICAL FIX: Reduced height to prevent overflow
+    -- Window Height (650) - Top Tabs/Header (~230) - Padding (20) = ~400
+    scroll:SetHeight(400) 
+    
     container:AddChild(scroll)
     self.socialScroll = scroll
 
+    -- 3. DATA PREP
     self.socialDB = {}
     local history = self.db.global.run_history or {}
     for _, run in ipairs(history) do
@@ -1352,64 +1381,63 @@ function Stautist:RefreshSocialList(container, filter)
     
     local list = {}
     for _, data in pairs(self.socialDB or {}) do table.insert(list, data) end
+    
+    -- Sort by Runs (Descending)
     table.sort(list, function(a,b) return a.runs > b.runs end)
 
     for _, pData in ipairs(list) do
         if filter == "" or string.find(string.lower(pData.name), string.lower(filter)) then
             
-            local row = AceGUI:Create("SimpleGroup")
-            row:SetLayout("Flow")
-            row:SetFullWidth(true)
+            -- CARD CONTAINER (Grid Item)
+            local card = AceGUI:Create("SimpleGroup")
+            card:SetLayout("Flow")
+            -- 0.24 width allows 4 items per row (4 * 24% = 96%) with space for scrollbar
+            card:SetRelativeWidth(0.24) 
             
-            -- Spacer to center the content in the list row
-            local rowSp = AceGUI:Create("Label"); rowSp:SetText(" "); rowSp:SetRelativeWidth(0.20); row:AddChild(rowSp)
-            
-            -- Icon
+            -- 1. CLASS ICON
             local icon = AceGUI:Create("Icon")
-            icon:SetImageSize(16, 16); icon:SetWidth(25)
+            icon:SetImageSize(18, 18)
+            icon:SetWidth(24) -- Tight width
             local coords = CLASS_ICON_TCOORDS[pData.class:upper()] or {0,1,0,1}
             icon:SetImage("Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes", unpack(coords))
-            row:AddChild(icon)
+            card:AddChild(icon)
 
-            -- Name (Now Clickable & Hoverable)
-            local nameLbl = AceGUI:Create("InteractiveLabel")
-            local color = RAID_CLASS_COLORS[pData.class:upper()] or {r=1,g=1,b=1}
-            nameLbl:SetText(pData.name)
-            nameLbl:SetColor(color.r, color.g, color.b)
-            nameLbl:SetWidth(150)
+            -- 2. TEXT (Name & Runs)
+            local lbl = AceGUI:Create("InteractiveLabel")
+            local color = self:SafeGetClassColor(pData.class)
+            local nameHex = string.format("|cff%02x%02x%02x", color.r*255, color.g*255, color.b*255)
             
-            -- CLICK: Open Details
-            nameLbl:SetCallback("OnClick", function() self:ShowPlayerDetails(pData) end)
+            -- Format: Name (Colored) \n Runs: X (Grey)
+            lbl:SetText(nameHex .. pData.name .. "|r\n|cff888888Runs: " .. pData.runs .. "|r")
             
-            -- HOVER: Show Summary
-            nameLbl:SetCallback("OnEnter", function(widget)
+            -- Fixed width to fit within the 1/4th column. 
+            -- Total width ~210px. Icon takes 24px. 160px is safe.
+            lbl:SetWidth(160) 
+            lbl:SetFont(self.FONT or "Fonts\\ARIALN.TTF", 11)
+            
+            -- 3. INTERACTIONS
+            lbl:SetCallback("OnClick", function() self:ShowPlayerDetails(pData) end)
+            
+            lbl:SetCallback("OnEnter", function(widget)
                 GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
                 GameTooltip:AddLine(pData.name, color.r, color.g, color.b)
                 GameTooltip:AddLine("Total Runs: " .. pData.runs, 1, 1, 1)
-                GameTooltip:AddLine(" ")
                 
-                -- Summary of last 3 runs
+                -- Mini History
+                GameTooltip:AddLine(" ")
                 for i = 1, math.min(3, #pData.history) do
                     local r = pData.history[i]
                     local zName = (self.BossDB[r.zone_id] and self.BossDB[r.zone_id].name) or "Unknown"
                     local wipeTxt = (r.wipes and r.wipes > 0) and (" |cffff0000("..r.wipes.." Wipes)|r") or ""
                     GameTooltip:AddLine(string.format("%s: %s%s", zName, self:FormatTime(r.total_time), wipeTxt), 0.7, 0.7, 0.7)
                 end
-                if #pData.history > 3 then GameTooltip:AddLine("...and " .. (#pData.history - 3) .. " more.", 0.5, 0.5, 0.5) end
-                GameTooltip:AddLine("Click for full details", 0, 1, 0)
+                GameTooltip:AddLine("Click for details", 0, 1, 0)
                 GameTooltip:Show()
             end)
-            nameLbl:SetCallback("OnLeave", function() GameTooltip:Hide() end)
+            lbl:SetCallback("OnLeave", function() GameTooltip:Hide() end)
             
-            row:AddChild(nameLbl)
-
-            -- Stats
-            local infoLbl = AceGUI:Create("Label")
-            infoLbl:SetText("Runs: " .. pData.runs)
-            infoLbl:SetWidth(100)
-            row:AddChild(infoLbl)
-
-            container:AddChild(row)
+            card:AddChild(lbl)
+            container:AddChild(card)
         end
     end
 end
@@ -1419,7 +1447,7 @@ function Stautist:ShowPlayerDetails(pData)
     local f = AceGUI:Create("Frame")
     
     -- Class Color Title
-    local color = RAID_CLASS_COLORS[pData.class:upper()] or {r=1,g=1,b=1}
+    local color = self:SafeGetClassColor(pData.class)
     local hex = string.format("|cff%02x%02x%02x", color.r*255, color.g*255, color.b*255)
     f:SetTitle("Details: " .. hex .. pData.name .. "|r")
     
@@ -1523,7 +1551,6 @@ function Stautist:DrawLogsContent(container)
     navGrp:SetFullWidth(true)
     container:AddChild(navGrp)
 
-    -- Spacer Left (Centering)
     local spNav = AceGUI:Create("Label"); spNav:SetText(" "); spNav:SetRelativeWidth(0.15); navGrp:AddChild(spNav)
 
     local btnLedger = AceGUI:Create("Button")
@@ -1534,7 +1561,7 @@ function Stautist:DrawLogsContent(container)
     navGrp:AddChild(btnLedger)
 
     local btnBossKills = AceGUI:Create("Button")
-    btnBossKills:SetText("Boss Kills") -- RENAMED
+    btnBossKills:SetText("Boss Kills") 
     btnBossKills:SetRelativeWidth(0.35)
     btnBossKills:SetCallback("OnClick", function() 
         container:ReleaseChildren()
@@ -1551,24 +1578,20 @@ function Stautist:DrawLogsContent(container)
     scroll:SetHeight(350)
     container:AddChild(scroll)
     
-    -- ==========================
     -- HOURLY LIMIT TRACKER
-    -- ==========================
     local grpLimit = AceGUI:Create("SimpleGroup")
     grpLimit:SetLayout("Flow")
     grpLimit:SetFullWidth(true)
     scroll:AddChild(grpLimit)
 
-    -- Custom Centered Header
     local headerLimit = AceGUI:Create("Label")
     headerLimit:SetText("HOURLY LIMIT TRACKER")
     headerLimit:SetFont(self.db.profile.font_title or "Fonts\\FRIZQT__.TTF", 14, "OUTLINE")
-    headerLimit:SetColor(1, 0.82, 0) -- Gold
+    headerLimit:SetColor(1, 0.82, 0) 
     headerLimit:SetFullWidth(true)
     headerLimit:SetJustifyH("CENTER")
     grpLimit:AddChild(headerLimit)
     
-    -- Divider
     local div1 = AceGUI:Create("Heading"); div1:SetFullWidth(true); div1:SetHeight(10); grpLimit:AddChild(div1)
 
     local logDB = self.db.char.instance_log or {}
@@ -1610,18 +1633,14 @@ function Stautist:DrawLogsContent(container)
         local row = AceGUI:Create("Label"); row:SetText("\nNo instances entered recently."); row:SetColor(0.5, 0.5, 0.5); row:SetFullWidth(true); row:SetJustifyH("CENTER"); grpLimit:AddChild(row)
     end
 
-    -- Spacer
     local spG = AceGUI:Create("Label"); spG:SetText(" "); spG:SetHeight(20); spG:SetFullWidth(true); scroll:AddChild(spG)
 
-    -- ==========================
     -- ACTIVE LOCKOUTS
-    -- ==========================
     local grpLock = AceGUI:Create("SimpleGroup")
     grpLock:SetLayout("Flow")
     grpLock:SetFullWidth(true)
     scroll:AddChild(grpLock)
 
-    -- Custom Centered Header
     local headerLock = AceGUI:Create("Label")
     headerLock:SetText("ACTIVE LOCKOUTS")
     headerLock:SetFont(self.db.profile.font_title or "Fonts\\FRIZQT__.TTF", 14, "OUTLINE")
@@ -1639,7 +1658,22 @@ function Stautist:DrawLogsContent(container)
             local name, _, reset, _, locked, _, _, _, _, diffName = GetSavedInstanceInfo(i)
             if locked then
                 hasLock = true
-                local txt = string.format("%s (%s) - Resets in: %dh %02dm", name, (diffName or "Normal"), math.floor(reset/3600), math.floor((reset%3600)/60))
+                
+                -- FORMATTING LOGIC CHANGE:
+                local days = math.floor(reset / 86400)
+                local r = reset % 86400
+                local hours = math.floor(r / 3600)
+                r = r % 3600
+                local mins = math.floor(r / 60)
+                
+                local timeStr = ""
+                if days > 0 then
+                    timeStr = string.format("%dd %02dh %02dm", days, hours, mins)
+                else
+                    timeStr = string.format("%02dh %02dm", hours, mins)
+                end
+                
+                local txt = string.format("%s (%s) - Resets in: %s", name, (diffName or "Normal"), timeStr)
                 
                 local lbl = AceGUI:Create("Label")
                 lbl:SetText(txt)
@@ -2292,3 +2326,114 @@ function Stautist:DrawPlaceholderContent(container, text)
     
     container:AddChild(lbl)
 end
+
+
+
+-- ============================================================================
+-- DATA IMPORT / EXPORT (PHASE 3)
+-- ============================================================================
+
+-- Base64 Encoder/Decoder for 3.3.5
+local b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+function Stautist:Base64Encode(data)
+    return ((data:gsub('.', function(x) 
+        local r,b='',x:byte()
+        for i=8,1,-1 do r=r..(b%2^i-b%2^(i-1)>0 and '1' or '0') end
+        return r;
+    end)..'0000'):gsub('%d%d%d?%d?%d?%d?', function(x)
+        if (#x < 6) then return '' end
+        local c=0
+        for i=1,6 do c=c+(x:sub(i,i)=='1' and 2^(6-i) or 0) end
+        return b64chars:sub(c+1,c+1)
+    end)..({ '', '==', '=' })[#data%3+1])
+end
+
+function Stautist:Base64Decode(data)
+    data = string.gsub(data, '[^'..b64chars..'=]', '')
+    return (data:gsub('.', function(x)
+        if (x == '=') then return '' end
+        local r,f='',b64chars:find(x)-1
+        for i=6,1,-1 do r=r..(f%2^i-f%2^(i-1)>0 and '1' or '0') end
+        return r;
+    end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
+        if (#x ~= 8) then return '' end
+        local c=0
+        for i=1,8 do c=c+(x:sub(i,i)=='1' and 2^(8-i) or 0) end
+        return string.char(c)
+    end))
+end
+
+function Stautist:ShowExportImportWindow(mode)
+    local AceGUI = LibStub("AceGUI-3.0")
+    local f = AceGUI:Create("Frame")
+    f:SetTitle("Stautist - " .. mode)
+    f:SetLayout("Flow")
+    f:SetWidth(500)
+    f:SetHeight(400)
+    f:SetCallback("OnClose", function(widget) AceGUI:Release(widget) end)
+
+    local ml = AceGUI:Create("MultiLineEditBox")
+    ml:SetLabel(mode == "EXPORT" and "Copy this text to save your data:" or "Paste data string here:")
+    ml:SetRelativeWidth(1.0)
+    ml:SetNumLines(20)
+    ml:DisableButton(true) -- No 'Enter' button needed
+    f:AddChild(ml)
+
+    if mode == "EXPORT" then
+        -- Serialize Run History
+        local Serializer = LibStub("AceSerializer-3.0")
+        if Serializer then
+            local data = {
+                version = "1.0",
+                history = self.db.global.run_history
+            }
+            local serialized = Serializer:Serialize(data)
+            local encoded = self:Base64Encode(serialized)
+            ml:SetText(encoded)
+            ml:SetFocus()
+            ml:HighlightText()
+        else
+            self:Print("Error: AceSerializer not found.")
+        end
+    else
+        -- IMPORT MODE
+        local btnImport = AceGUI:Create("Button")
+        btnImport:SetText("Process Import")
+        btnImport:SetRelativeWidth(1.0)
+        btnImport:SetCallback("OnClick", function()
+            local text = ml:GetText()
+            if not text or text == "" then return end
+            
+            local decoded = self:Base64Decode(text)
+            local Serializer = LibStub("AceSerializer-3.0")
+            local success, data = Serializer:Deserialize(decoded)
+            
+            if success and data and data.history then
+                -- Merge Logic
+                local count = 0
+                for _, newRun in ipairs(data.history) do
+                    -- Check for duplicates (simple check by timestamp + zone)
+                    local exists = false
+                    for _, oldRun in ipairs(self.db.global.run_history) do
+                        if oldRun.timestamp == newRun.timestamp and oldRun.zone_id == newRun.zone_id then
+                            exists = true; break
+                        end
+                    end
+                    if not exists then
+                        table.insert(self.db.global.run_history, newRun)
+                        count = count + 1
+                    end
+                end
+                self:Print("Import Successful! Added " .. count .. " runs.")
+                f:Hide()
+                self:RefreshLeaderboard()
+            else
+                self:Print("|cffff0000Import Failed:|r Invalid data string.")
+            end
+        end)
+        f:AddChild(btnImport)
+    end
+end
+
+
+
