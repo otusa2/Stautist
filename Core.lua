@@ -1130,7 +1130,14 @@ function Stautist:CreateLeaderboardRow(container, rank, run)
     if run.zone_id and self.BossDB[run.zone_id] then 
         zName = self.BossDB[run.zone_id].name 
     end
+    
     local displayName = zName
+    
+    -- Add Heroic Skull Icon
+    if run.difficulty == "Heroic" then
+        displayName = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_8:12|t " .. displayName
+    end
+    
     if run.partial then displayName = displayName .. " |cffffcc00*|r" end 
 
     -- TOOLTIP FUNCTION (UPDATED)
@@ -1695,9 +1702,12 @@ end
 function Stautist:DrawBossKillsView(container)
     local AceGUI = LibStub("AceGUI-3.0")
     
+    -- Initialize filters if missing
     self.log_filters = self.log_filters or {
-        exp = "WotLK", type = "dungeon", zone = "All", boss = "All", size = "All"
+        exp = "WotLK", type = "dungeon", zone = "All", boss = "All", size = "All", difficulty = "Heroic"
     }
+    -- Default difficulty to Heroic if not set (for existing users)
+    if not self.log_filters.difficulty then self.log_filters.difficulty = "Heroic" end
 
     -- HEADER
     local header = AceGUI:Create("SimpleGroup")
@@ -1722,19 +1732,17 @@ function Stautist:DrawBossKillsView(container)
     ApplyFont(title, 14)
     header:AddChild(title)
 
-
-
-
-    -- FILTERS (Table Layout - Aggressive Minimums)
+    -- FILTERS (Table Layout)
     local filters = AceGUI:Create("SimpleGroup")
     filters:SetLayout("Table")
     filters:SetUserData("table", {
         columns = {
-            {weight = 1, min = 125},   -- Expansion
-            {weight = 1, min = 115},   -- Type
-            {weight = 0.5, min = 70},  -- Size
-            {weight = 1.5, min = 200}, -- Zone (Widened)
-            {weight = 1.5, min = 200}, -- Boss (Widened)
+            {weight = 1, min = 100},   -- Expansion
+            {weight = 1, min = 100},   -- Type
+            {weight = 1, min = 100},   -- Difficulty (NEW)
+            {weight = 0.5, min = 60},  -- Size
+            {weight = 1.5, min = 150}, -- Zone
+            {weight = 1.5, min = 150}, -- Boss
         },
         space = 10,
         align = "BOTTOM"
@@ -1766,7 +1774,19 @@ function Stautist:DrawBossKillsView(container)
     ApplyFont(dropType)
     filters:AddChild(dropType)
 
-    -- 3. Size
+    -- 3. Difficulty (NEW)
+    local dropDiff = AceGUI:Create("Dropdown")
+    dropDiff:SetLabel("Difficulty")
+    dropDiff:SetList({["Normal"]="Normal", ["Heroic"]="Heroic"})
+    dropDiff:SetValue(self.log_filters.difficulty)
+    dropDiff:SetCallback("OnValueChanged", function(_,_,val)
+        self.log_filters.difficulty = val
+        container:ReleaseChildren(); self:DrawBossKillsView(container)
+    end)
+    ApplyFont(dropDiff)
+    filters:AddChild(dropDiff)
+
+    -- 4. Size
     local dropSize = AceGUI:Create("Dropdown")
     dropSize:SetLabel("Size")
     dropSize:SetList({ ["All"]="All", ["5"]="5", ["10"]="10", ["25"]="25", ["40"]="40" })
@@ -1778,7 +1798,7 @@ function Stautist:DrawBossKillsView(container)
     ApplyFont(dropSize)
     filters:AddChild(dropSize)
 
-    -- 4. Zone
+    -- 5. Zone
     local zoneList = {}
     for id, data in pairs(self.BossDB) do
         if data.tier == self.log_filters.exp and data.type == self.log_filters.type then
@@ -1804,7 +1824,7 @@ function Stautist:DrawBossKillsView(container)
     ApplyFont(dropZone)
     filters:AddChild(dropZone)
 
-    -- 5. Boss
+    -- 6. Boss
     local bossList = {["All"] = "Select a Boss"}
     if self.log_filters.zone ~= "None" and self.BossDB[self.log_filters.zone] then
         local zData = self.BossDB[self.log_filters.zone]
@@ -1825,11 +1845,6 @@ function Stautist:DrawBossKillsView(container)
     ApplyFont(dropBoss)
     filters:AddChild(dropBoss)
 
-
-
-
-    
-
     -- DATA LIST
     local scroll = AceGUI:Create("ScrollFrame")
     scroll:SetLayout("Flow"); scroll:SetFullWidth(true); scroll:SetHeight(380)
@@ -1844,14 +1859,19 @@ function Stautist:DrawBossKillsView(container)
         return
     end
 
-    -- PROCESS DATA (Same as before)
+    -- PROCESS DATA
     local bossID = self.log_filters.boss
+    local targetDiff = self.log_filters.difficulty -- Normal or Heroic
     local kills = {}
     
     if self.db.global.run_history then
         for _, run in ipairs(self.db.global.run_history) do
             local sizeMatch = (self.log_filters.size == "All") or (tostring(run.size or 0) == self.log_filters.size)
-            if sizeMatch and run.boss_kills then
+            -- NEW: Check Difficulty
+            local runDiff = run.difficulty or "Normal"
+            local diffMatch = (runDiff == targetDiff)
+            
+            if sizeMatch and diffMatch and run.boss_kills then
                 local kData = run.boss_kills[bossID] or run.boss_kills[tostring(bossID)]
                 if kData and kData.duration then
                     table.insert(kills, {
@@ -1866,7 +1886,7 @@ function Stautist:DrawBossKillsView(container)
     table.sort(kills, function(a,b) return a.duration < b.duration end)
 
     if #kills == 0 then
-        local lbl = AceGUI:Create("Label"); lbl:SetText("\nNo kills recorded for this boss."); lbl:SetJustifyH("CENTER"); lbl:SetFullWidth(true)
+        local lbl = AceGUI:Create("Label"); lbl:SetText("\nNo kills recorded for this boss (" .. targetDiff .. ")."); lbl:SetJustifyH("CENTER"); lbl:SetFullWidth(true)
         ApplyFont(lbl)
         scroll:AddChild(lbl)
     else
@@ -1884,8 +1904,9 @@ function Stautist:DrawBossKillsView(container)
             grp:AddChild(lblTime)
             
             local lblInfo = AceGUI:Create("InteractiveLabel")
-            local diffShort = (k.difficulty == "Heroic") and " (HC)" or ""
-            lblInfo:SetText(k.date .. diffShort)
+            -- We filter by difficulty now, so (HC) tag is redundant but good for safety
+            local diffShort = (k.difficulty == "Heroic") and "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_8:12|t" or ""
+            lblInfo:SetText(k.date .. " " .. diffShort)
             lblInfo:SetWidth(150)
             ApplyFont(lblInfo)
             

@@ -497,7 +497,7 @@ end
 function Stautist:SetDungeonTitle(name, isHeroic, sizeTag)
     if not self.hudFrame then return end
     local cleanName = name or "Unknown"
-    local prefixes = { "Auchindoun: ", "Caverns of Time: ", "Coilfang Reservoir: ", "Hellfire Citadel: ", "Tempest Keep: ", "Scarlet Monastery: " }
+    local prefixes = { "Auchindoun: ", "Caverns of Time: ", "Coilfang Reservoir: ", "Coilfang: ", "Hellfire Citadel: ", "Tempest Keep: ", "Scarlet Monastery: " }
     for _, p in ipairs(prefixes) do if string.find(cleanName, p) then cleanName = cleanName:gsub(p, "") break end end
     if cleanName == "Ahn'kahet: The Old Kingdom" then cleanName = "Ahn'kahet" end
 

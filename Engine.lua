@@ -756,26 +756,54 @@ function Stautist:OnBossKill(npcID, bossName, difficulty)
     end
 end
 
-function Stautist:COMBAT_LOG_EVENT_UNFILTERED(event, timestamp, subEvent, sourceGUID, sourceName, sourceFlags, destGUID, destName, destFlags)
-    if type(event) == "table" then subEvent = timestamp; sourceGUID = sourceName; sourceName = sourceFlags; destGUID = destName; destName = destFlags end 
+function Stautist:COMBAT_LOG_EVENT_UNFILTERED(event, timestamp, subEvent, sourceGUID, sourceName, sourceFlags, destGUID, destName, destFlags, ...)
+    -- Ace3 Event Shim
+    if type(event) == "table" then 
+        local _
+        subEvent = timestamp
+        sourceGUID, sourceName, sourceFlags, destGUID, destName, destFlags = subEvent, sourceGUID, sourceName, destGUID, destName, destFlags
+        -- Capture varargs for spell info
+        -- Note: In Ace3 passed events, '...' contains the rest of the payload starting after destFlags
+    end
+    
     local state = self.db.char.active_run_state
     if not state.is_running then return end
 
     -- 1. START TIMER LOGIC (Trigger on Combat)
     if state.waiting_for_combat then
-        local isHostile = (subEvent:find("_DAMAGE") or subEvent:find("_CAST_") or subEvent == "RANGE_DAMAGE" or subEvent == "SWING_DAMAGE" or subEvent == "SPELL_AURA_APPLIED" or subEvent == "SPELL_AURA_APPLIED_DOSE")
+        local isHostile = false
+        
+        -- A. Damage Events (Swing, Range, Spell, Periodic)
+        if subEvent == "SWING_DAMAGE" or subEvent == "RANGE_DAMAGE" or (subEvent and subEvent:find("_DAMAGE")) then
+            isHostile = true
+        
+        -- B. Debuff Application (Strict Check)
+        elseif subEvent == "SPELL_AURA_APPLIED" then
+            -- For 3.3.5: arg9=spellId, arg10=spellName, arg11=spellSchool, arg12=auraType
+            local _, _, _, auraType = ...
+            if auraType == "DEBUFF" then
+                isHostile = true
+            end
+        end
         
         if isHostile then
-             -- Check if Player/Group is involved
-             local sourceIsPlayer = (sourceFlags and bit.band(sourceFlags, COMBATLOG_OBJECT_TYPE_PLAYER) > 0) or (sourceFlags and bit.band(sourceFlags, COMBATLOG_OBJECT_TYPE_PET) > 0)
-             local destIsPlayer = (destFlags and bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) > 0) or (destFlags and bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PET) > 0)
-             
-             if sourceIsPlayer or destIsPlayer then
+             -- Check if Player/Pet is involved (using BitMasks, safer than API calls)
+             local COMBATLOG_OBJECT_TYPE_PLAYER = COMBATLOG_OBJECT_TYPE_PLAYER or 0x00000400
+             local COMBATLOG_OBJECT_TYPE_PET    = COMBATLOG_OBJECT_TYPE_PET or 0x00001000
+             local COMBATLOG_OBJECT_TYPE_GUARDIAN = COMBATLOG_OBJECT_TYPE_GUARDIAN or 0x00002000
+
+             local function IsFriendly(flags)
+                if not flags then return false end
+                return (bit.band(flags, COMBATLOG_OBJECT_TYPE_PLAYER) > 0) or
+                       (bit.band(flags, COMBATLOG_OBJECT_TYPE_PET) > 0) or
+                       (bit.band(flags, COMBATLOG_OBJECT_TYPE_GUARDIAN) > 0)
+             end
+
+             if IsFriendly(sourceFlags) or IsFriendly(destFlags) then
                  state.waiting_for_combat = false
                  state.start_time = GetTime()
                  self:Print("|cff00ff00Combat Started! Timer Running.|r")
                  
-                 -- Play a sound or shake HUD to indicate start
                  if self.ShakeHUD then self:ShakeHUD() end
              end
         end
@@ -814,11 +842,14 @@ function Stautist:COMBAT_LOG_EVENT_UNFILTERED(event, timestamp, subEvent, source
         end
 
         -- BOSS FIGHT TIMER LOGIC
-        local isHostileAction = (subEvent:find("_DAMAGE") or subEvent:find("_CAST_") or subEvent == "RANGE_DAMAGE" or subEvent == "SWING_DAMAGE" or subEvent == "SPELL_AURA_APPLIED")
-        local sourceIsPlayer = (UnitIsPlayer(sourceName) or UnitIsPet(sourceGUID) or (sourceFlags and bit.band(sourceFlags, COMBATLOG_OBJECT_TYPE_PLAYER) > 0))
-        local destIsPlayer   = (UnitIsPlayer(destName)   or UnitIsPet(destGUID)   or (destFlags and bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) > 0))
+        -- Re-using isHostile check logic but simpler for Boss tracking
+        local isAction = (subEvent == "SWING_DAMAGE" or subEvent == "RANGE_DAMAGE" or (subEvent and subEvent:find("_DAMAGE")) or subEvent == "SPELL_AURA_APPLIED")
+        
+        local COMBATLOG_OBJECT_TYPE_PLAYER = COMBATLOG_OBJECT_TYPE_PLAYER or 0x00000400
+        local sIsPlayer = sourceFlags and (bit.band(sourceFlags, COMBATLOG_OBJECT_TYPE_PLAYER) > 0)
+        local dIsPlayer = destFlags and (bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) > 0)
 
-        if isHostileAction and (sourceIsPlayer or destIsPlayer) then
+        if isAction and (sIsPlayer or dIsPlayer) then
             if not state.current_fight_start or state.combat_boss_id ~= bossID then
                 state.current_fight_start = GetTime()
                 state.combat_boss_id = bossID 
@@ -828,7 +859,7 @@ function Stautist:COMBAT_LOG_EVENT_UNFILTERED(event, timestamp, subEvent, source
     end
     
     if subEvent == "UNIT_DIED" then
-        if UnitIsPlayer(destName) then
+        if destName and UnitIsPlayer(destName) then
             if state.combat_boss_id then state.combat_deaths = (state.combat_deaths or 0) + 1 end
         else
             local npcID = tonumber(destGUID:sub(9, 12), 16)
