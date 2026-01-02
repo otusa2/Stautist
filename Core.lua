@@ -1,0 +1,2294 @@
+-- Stautist Core - Phase 1 (Rev 3)
+-- Client: 3.3.5a (WotLK)
+
+local addonName, addonTable = ...
+
+-- ============================================================================
+-- 1. LIBRARIES & ADDON INITIALIZATION (MUST BE AT TOP)
+-- ============================================================================
+
+-- FAILSAFE: Check if Ace3 is loaded globally
+if not LibStub then 
+    print("|cffff0000Stautist Error:|r LibStub not found. Please install Ace3.")
+    return 
+end
+
+local AceAddon = LibStub("AceAddon-3.0", true)
+if not AceAddon then
+    print("|cffff0000Stautist Error:|r AceAddon-3.0 not found. Enable 'Ace3'.")
+    return
+end
+
+-- Initialize Object (MOVED TO TOP)
+Stautist = AceAddon:NewAddon(addonName, "AceConsole-3.0", "AceEvent-3.0", "AceTimer-3.0")
+
+-- FAILSAFE: Ensure Class Icon Coords exist (3.3.5a fallback)
+local CLASS_ICON_TCOORDS = CLASS_ICON_TCOORDS or {
+    ["WARRIOR"] = {0, 0.25, 0, 0.25}, ["MAGE"] = {0.25, 0.5, 0, 0.25},
+    ["ROGUE"] = {0.5, 0.75, 0, 0.25}, ["DRUID"] = {0.75, 1, 0, 0.25},
+    ["HUNTER"] = {0, 0.25, 0.25, 0.5}, ["SHAMAN"] = {0.25, 0.5, 0.25, 0.5},
+    ["PRIEST"] = {0.5, 0.75, 0.25, 0.5}, ["WARLOCK"] = {0.75, 1, 0.25, 0.5},
+    ["PALADIN"] = {0, 0.25, 0.5, 0.75}, ["DEATHKNIGHT"] = {0.25, 0.5, 0.5, 0.75},
+}
+
+local DB_VERSION = 1
+local L = LibStub("AceLocale-3.0"):GetLocale("Stautist", true)
+if not L then
+    L = {
+        ["ADDON_LOADED"] = "Stautist Engine Loaded. Type /stau for options.",
+        ["DB_VERSION_MISMATCH"] = "Database version mismatch."
+    }
+end
+
+
+
+-- FONT HELPER
+local FONT_MAIN = "Interface\\AddOns\\Stautist\\Fonts\\PTSans.ttf"
+
+local function ApplyFont(widget, size)
+    if not widget then return end
+    local s = size or 11
+    
+    if widget.type == "Label" or widget.type == "InteractiveLabel" then
+        widget:SetFont(FONT_MAIN, s)
+    elseif widget.type == "Button" then
+        if widget.text then widget.text:SetFont(FONT_MAIN, s) end
+    elseif widget.type == "CheckBox" then
+        if widget.text then widget.text:SetFont(FONT_MAIN, s) end
+    elseif widget.type == "Dropdown" then
+        if widget.text then widget.text:SetFont(FONT_MAIN, s) end
+        if widget.label then widget.label:SetFont(FONT_MAIN, s) end
+    elseif widget.type == "Slider" then
+        if widget.label then widget.label:SetFont(FONT_MAIN, s) end
+        if widget.valtext then widget.valtext:SetFont(FONT_MAIN, s) end
+        if widget.lowtext then widget.lowtext:SetFont(FONT_MAIN, s) end
+        if widget.hightext then widget.hightext:SetFont(FONT_MAIN, s) end
+    elseif widget.type == "InlineGroup" or widget.type == "TabGroup" then
+        if widget.titletext then widget.titletext:SetFont(FONT_MAIN, s + 2) end
+    end
+end
+
+
+-- ============================================================================
+-- 2. STATIC POPUPS (Confirmations)
+-- ============================================================================
+
+StaticPopupDialogs["STAUTIST_RESET_1"] = {
+    text = "This will clean ALL your data (Runs, History, Logs).\nThere is no coming back.",
+    button1 = "Continue",
+    button2 = "Cancel",
+    OnAccept = function() StaticPopup_Show("STAUTIST_RESET_2") end,
+    timeout = 0, whileDead = true, hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+StaticPopupDialogs["STAUTIST_RESET_2"] = {
+    text = "|cffff0000WARNING:|r Are you sure you want to wipe your ENTIRE database?\n\nLast chance.",
+    button1 = "WIPE IT",
+    button2 = "Cancel",
+    OnAccept = function() 
+        Stautist.db:ResetDB("Default")
+        ReloadUI()
+    end,
+    timeout = 0, whileDead = true, hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+StaticPopupDialogs["STAUTIST_DELETE_RUN"] = {
+    text = "Are you sure you want to delete this run entry?",
+    button1 = "Yes",
+    button2 = "No",
+    OnAccept = function(self, data)
+        local index = data
+        if index and Stautist.db.global.run_history[index] then
+            table.remove(Stautist.db.global.run_history, index)
+            Stautist:RefreshLeaderboard()
+            Stautist:Print("Run deleted.")
+        end
+    end,
+    timeout = 0, whileDead = true, hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+StaticPopupDialogs["STAUTIST_RUN_ONGOING"] = {
+    text = "Stautist: You left the instance while a run was active.",
+    button1 = "Run Finished", -- OnAccept
+    button2 = "Keep Active",  -- OnCancel (Safe default)
+    button3 = "Abandon",      -- OnAlt (Destructive)
+    
+    OnAccept = function() 
+        Stautist:StopRun(false, "Manual Stop") 
+    end,
+    
+    OnCancel = function() 
+        -- SAFE: Do nothing, just keep the data alive.
+        Stautist:Print("Run kept active. Waiting for re-entry...")
+        Stautist:ShowHUD()
+    end,
+    
+    OnAlt = function() 
+        -- DESTRUCTIVE: Only wipes if you explicitly click the 3rd button
+        local state = Stautist.db.char.active_run_state
+        state.is_running = false
+        state.hud_forced = nil
+        state.zone_id = nil 
+        Stautist.debug_mode = false 
+        
+        Stautist:Print("Run Abandoned (Data discarded).")
+        Stautist:UpdateHUDText("ABORTED")
+        Stautist:HideHUD()
+    end,
+    
+    timeout = 0, whileDead = true, hideOnEscape = true, 
+    preferredIndex = 3,
+}
+
+StaticPopupDialogs["STAUTIST_RELOAD"] = {
+    text = "Font changed. You need to reload the UI for changes to take effect.\nReload now?",
+    button1 = "Yes",
+    button2 = "No",
+    OnAccept = function() ReloadUI() end,
+    timeout = 0, whileDead = true, hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+StaticPopupDialogs["STAUTIST_SHOW_HUD"] = {
+    text = "Stautist: Run Started.\nShow HUD for this run?",
+    button1 = "Yes",
+    button2 = "No",
+    OnAccept = function() 
+        Stautist.db.char.active_run_state.hud_forced = true
+        Stautist:ShowHUD() 
+    end,
+    OnCancel = function()
+        Stautist.db.char.active_run_state.hud_forced = false
+        Stautist:HideHUD()
+    end,
+    timeout = 0, whileDead = true, hideOnEscape = false,
+    preferredIndex = 3,
+}
+
+function Stautist:ShowRunOngoingPopup()
+    -- 1. Cooldown Check (15 Seconds)
+    -- Prevents the pulse checks from triggering multiple popups in a row
+    if self.popup_cooldown and GetTime() < self.popup_cooldown then return end
+    
+    -- 2. Visibility Check
+    -- If it's already on screen, don't try to show it again
+    if StaticPopup_Visible("STAUTIST_RUN_ONGOING") then return end
+
+    -- 3. Show Popup
+    StaticPopup_Show("STAUTIST_RUN_ONGOING")
+    
+    -- 4. Set Cooldown
+    self.popup_cooldown = GetTime() + 15
+end
+
+-- ============================================================================
+-- 3. CORE LOGIC
+-- ============================================================================
+
+function Stautist:OnInitialize()
+    -- Defined defaults
+    local defaults = {
+        global = {
+            db_version = DB_VERSION,
+            social_ledger = {}, 
+            run_history = {},
+            gold_log = {},
+            -- instance_log removed from global
+        },
+        profile = {
+            first_run = true,
+            minimap = { hide = false },
+            timer_pos = { a="CENTER", p="UIParent", x=0, y=200 },
+            timer_scale = 1.0,
+            hud_width = 240,
+            config_scale = 1.0,
+            font_title = "Interface\\AddOns\\Stautist\\Fonts\\Molard.ttf",
+            font_general = "Interface\\AddOns\\Stautist\\Fonts\\CORPOREA.TTF",
+            timer_locked = false,
+            hud_behavior = "Show",
+            announce_completion = true,
+            announce_resets = true,
+            announce_lockouts = true,
+            show_splits = true,
+            show_wipes = true,
+            announce_fastest_kill = true,
+        },
+        char = {
+            active_run_state = { is_running = false, wipes = 0, current_boss_count = 0 },
+            saved_instances = {},
+            instance_log = {}, -- MOVED HERE (Per Character)
+            last_instance_name = nil, -- Tracking for re-entry
+            reset_detected = false,   -- Tracking for reset
+        }
+    }
+
+    -- Initialize DB
+    self.db = LibStub("AceDB-3.0"):New("StautistDB", defaults, true)
+    
+    -- Set Global Font Variable for use across the addon
+    self.FONT = self.db.profile.font
+    
+    -- Register Chat Command
+    self:RegisterChatCommand("stau", "OnChatCommand")
+
+    -- Load HUD
+    if self.CreateHUD then
+        self:CreateHUD()
+    else
+        print("|cffff0000Stautist Error:|r HUD.lua failed to load.")
+    end
+end
+
+function Stautist:OnEnable()
+    -- Schedule the Welcome Message (delayed for UI)
+    self:ScheduleTimer("StartupSequence", 4)
+end
+
+function Stautist:CleanupInstanceLog()
+    if not self.db.char.instance_log then self.db.char.instance_log = {} return end
+    
+    local now = time()
+    local limit = 3600 -- 60 Minutes
+    
+    -- Iterate backwards to remove items safely
+    for i = #self.db.char.instance_log, 1, -1 do
+        local entry = self.db.char.instance_log[i]
+        if not entry.time or (now - entry.time) > limit then
+            table.remove(self.db.char.instance_log, i)
+        end
+    end
+end
+
+function Stautist:StartupSequence()
+    -- CLEANUP: Wipe old instances immediately on login
+    self:CleanupInstanceLog()
+    print("|cffffd700[Stautist DEBUG] Delayed startup sequence initiated.|r")
+
+    -- 1. Load Data
+    if self.LoadBossDatabase and (not self.NPC_TO_ZONE or next(self.NPC_TO_ZONE) == nil) then
+        print("[DEBUG] Data file seems loaded. Building NPC->Zone map...")
+        self:LoadBossDatabase(true)
+    else
+        print("[DEBUG] NPC->Zone map already built or function is missing.")
+    end
+
+    -- 2. Start the Engine
+    if self.SetupEngine then
+        print("[DEBUG] Engine file seems loaded. Starting it now.")
+        self:SetupEngine()
+    else
+        print("[DEBUG] CRITICAL FAILURE: SetupEngine function not found. Check Engine.lua.")
+        return
+    end
+
+-- 4. Setup Wizard Check
+    if self.db.profile.first_run then
+        self.db.profile.first_run = false
+        self:RunSetupWizard()
+    end
+
+
+-- 3. Print Welcome / Resume Message
+    local state = self.db.char.active_run_state
+    if state.is_running then
+        self:Print("|cff00ff00[Resume]|r Active run detected (" .. (state.zone_name or "Unknown") .. "). Restoring UI...")
+        -- Force an immediate check, bypassing the 2s delay usually found in OnEnterInstance
+        if self.CheckZoneStatus then self:CheckZoneStatus() end
+    else
+        self:Print(L["ADDON_LOADED"] or "Stautist Engine Loaded.")
+        local count = 0
+        for _ in pairs(self.NPC_TO_ZONE or {}) do count = count + 1 end
+        self:Print("Database ready. " .. count .. " NPCs mapped. Waiting for dungeon entry...")
+    end
+end
+
+-- ============================================================================
+-- COMMANDS
+-- ============================================================================
+
+function Stautist:OnChatCommand(input)
+    local cmd, arg = input:trim():match("^(%S+)%s*(.-)$")
+    cmd = cmd and cmd:lower() or ""
+
+    if cmd == "" then
+        self:OpenConfigWindow()
+    elseif cmd == "help" then
+        print("|cff00ff00Stautist Commands:|r")
+        print("  /stau start - Force restart current run")
+        print("  /stau stop - Stop current run")
+        print("  /stau debug [zoneID] - Force START a test run")
+        print("  /stau fakekill [ID] - Simulate a boss kill")
+        print("  /stau resetdb - WIPE ALL DATA")
+    elseif cmd == "start" then
+        self:Print("Force restarting run...")
+        local state = self.db.char.active_run_state
+        state.is_running = false
+        self:CheckZoneStatus()
+    elseif cmd == "stop" then
+        if self.StopRun then self:StopRun(false, "Manual") end
+    elseif cmd == "show" then
+        self:ShowHUD()
+    elseif cmd == "hide" then
+        self:HideHUD()
+    elseif cmd == "resethud" then
+        self.db.profile.timer_pos = { a="CENTER", p="UIParent", x=0, y=200 }
+        if self.hudFrame then
+            self.hudFrame:ClearAllPoints()
+            self.hudFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 200)
+        end
+    elseif cmd == "id" then
+        self:GetTargetID()
+    elseif cmd == "debug" then
+            local zoneID = tonumber(arg) or 389 -- Default to Ragefire Chasm (389) if no arg
+            self:Print("|cffffff00[Debug Mode]|r Forcing run start for Zone ID: " .. zoneID)
+            
+            self.currentZoneID = zoneID
+            self.debug_mode = true 
+            
+            local state = self.db.char.active_run_state
+            state.is_running = true
+            state.zone_id = zoneID
+            
+            -- Get Zone Data
+            local zData = self.BossDB[zoneID]
+            local zName = zData and zData.name or "Debug Zone"
+            local zTier = zData and zData.tier or "Classic"
+            
+            state.zone_name = zName
+            state.difficulty = "Normal"
+            state.start_time = GetTime()
+            state.boss_kills = {}
+            state.wipes = 0
+            state.roster = self:GetRosterSnapshot()
+            state.splits_invalid = false
+            
+            -- 1. PB LOOKUP (Crucial for Splits)
+            state.pb_run_data = nil
+            local bestTimeFound = nil
+            local bestRun = nil
+            
+            -- Try to find real PB
+            if self.db.global.run_history then
+                for _, run in pairs(self.db.global.run_history) do
+                    if run.zone_id == zoneID and run.difficulty == "Normal" and run.success then
+                        if not bestRun or run.total_time < bestRun.total_time then
+                            bestRun = run
+                        end
+                    end
+                end
+            end
+
+            -- NEW: If no PB exists, create a Fake one for Debugging
+            if not bestRun then
+                self:Print("|cff00ccff[Debug]|r No PB found. Generating Mock PB for testing...")
+                bestRun = {
+                    total_time = 300, -- Fake 5 min run
+                    boss_kills = {}
+                }
+                
+                -- Generate fake splits based on boss count
+                local count = 0
+                for _ in pairs(zData.bosses) do count = count + 1 end
+                local step = 300 / (count > 0 and count or 1)
+                
+                -- Sort bosses to assign logical times
+                local tempBosses = {}
+                for id, b in pairs(zData.bosses) do
+                    local bOrder = (type(b)=="table" and b.order) or 50
+                    if zData.end_boss_id and id == zData.end_boss_id then bOrder = 100 end
+                    table.insert(tempBosses, {id=id, order=bOrder})
+                end
+                table.sort(tempBosses, function(a,b) return a.order < b.order end)
+
+                for i, b in ipairs(tempBosses) do
+                    bestRun.boss_kills[b.id] = {
+                        split_time = step * i, 
+                    }
+                end
+            else
+                self:Print("PB Loaded for Debug Splits: " .. self:FormatTime(bestRun.total_time))
+            end
+
+            state.pb_run_data = bestRun
+            bestTimeFound = bestRun.total_time
+            state.best_time_cache = bestTimeFound
+
+            -- 2. BUILD HUD (With Sorting)
+            if zData then
+                if self.ClearBossList then self:ClearBossList() end
+                
+                -- Sort Bosses
+                local bosses = {}
+                for npcID, data in pairs(zData.bosses) do
+                    local bName = (type(data)=="table" and data.name or data)
+                    local bOrder = 50
+                    if type(data) == "table" and data.order then
+                        bOrder = data.order
+                    elseif zData.end_boss_id and npcID == zData.end_boss_id then
+                        bOrder = 100 -- Force End Boss to bottom
+                    end
+                    table.insert(bosses, { id = npcID, name = bName, order = bOrder })
+                end
+                table.sort(bosses, function(a,b) return a.order < b.order end)
+
+                -- Add to HUD
+                for _, b in ipairs(bosses) do
+                    self:AddBossToList(b.id, b.name, b.order) -- PASS ORDER
+                end
+                
+                self:UpdateHUDHeight()
+                self:SetDungeonTitle(zName .. " (TEST)", false)
+                
+                -- Update Stats
+                if self.hudFrame then
+                    if self.hudFrame.timeToBeat then
+                        local btText = bestTimeFound and self:FormatTime(bestTimeFound) or "--:--"
+                        self.hudFrame.timeToBeat:SetText("PB: " .. btText)
+                    end
+                    -- Reset Wipes
+                    if self.UpdateHUDWipes then self:UpdateHUDWipes(0) end
+                    -- Ensure Layout
+                    if self.UpdateHUDLayout then self:UpdateHUDLayout() end
+                end
+                
+                self:ShowHUD()
+            end
+        elseif cmd == "fakekill" then
+            local npcID = tonumber(arg)
+            if npcID then
+                if not self.db.char.active_run_state.is_running then
+                    self:Print("No active run! Starting Debug Run...")
+                    local zID = self.NPC_TO_ZONE and self.NPC_TO_ZONE[npcID] or 409
+                    self:OnChatCommand("debug " .. zID)
+                end
+
+                local bName = "Unknown Boss"
+                if self.currentZoneID and self.BossDB[self.currentZoneID] then
+                    local bData = self.BossDB[self.currentZoneID].bosses[npcID]
+                    bName = type(bData) == "table" and bData.name or bData
+                end
+                
+                if self.AddBossToList then self:AddBossToList(npcID, bName) end
+                if self.OnBossKill then self:OnBossKill(npcID, bName) end
+            end
+        elseif cmd == "resetdb" then
+            self.db:ResetDB("Default")
+            ReloadUI()
+        end
+    end
+
+
+
+function Stautist:GetTargetID()
+    local guid = UnitGUID("target")
+    if not guid then self:Print("No target selected."); return end
+    local id = tonumber(guid:sub(9, 12), 16)
+    local name = UnitName("target")
+    self:Print(string.format("Target: |cff00ff00%s|r | ID: |cffffcc00%d|r", name, id))
+end
+
+-- ============================================================================
+-- CONFIGURATION GUI
+-- ============================================================================
+
+local UI_WIDTH = 850
+local UI_HEIGHT = 650
+local C_RED = {1, 0.2, 0.2, 1}
+local C_DARK_RED = {0.6, 0.1, 0.1, 1}
+local C_BLACK_50 = {0, 0, 0, 0.5} 
+local C_BORDER = {1, 1, 1, 1} 
+
+function Stautist:OpenConfigWindow()
+    if self.ConfigFrame then
+        if self.ConfigFrame:IsShown() then self.ConfigFrame:Hide() else self.ConfigFrame:Show(); self:SwitchTab("General") end
+        return
+    end
+
+    local f = CreateFrame("Frame", "StautistConfigMain", UIParent)
+    f:SetSize(UI_WIDTH, UI_HEIGHT)
+    f:SetPoint("CENTER")
+    f:SetScale(self.db.profile.config_scale or 1.0)
+    f:SetFrameStrata("HIGH")
+    f:EnableMouse(true)
+    f:SetMovable(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+
+    f:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = false, tileSize = 0, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
+    })
+    f:SetBackdropColor(unpack(C_BLACK_50))
+    f:SetBackdropBorderColor(unpack(C_BORDER))
+
+    f.logo = f:CreateTexture(nil, "ARTWORK")
+    f.logo:SetSize(256, 100) 
+    f.logo:SetPoint("TOP", 0, -20)
+    f.logo:SetTexture("Interface\\AddOns\\Stautist\\Textures\\logo.tga")
+    f.logo:SetBlendMode("BLEND")
+    
+    f.verText = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    f.verText:SetPoint("TOP", f.logo, "BOTTOM", 0, -5)
+    f.verText:SetText("v0.1")
+    f.verText:SetTextColor(unpack(C_RED))
+    f.verText:SetFont(FONT_MAIN, 10, "OUTLINE")
+
+    self:CreateHeaderButton(f, "SETUP", "TOPLEFT", 20, -20, function() self:RunSetupWizard() end)
+    self:CreateHeaderButton(f, "CLOSE", "TOPRIGHT", -20, -20, function() f:Hide() end)
+
+    local tabY = -160
+    self.tabButtons = {}
+    local tabs = {"General", "Leaderboard", "Black Book", "Logs", "Guild"}
+    local btnWidth = 120
+    local gap = 5
+    local totalTabWidth = (#tabs * btnWidth) + ((#tabs - 1) * gap)
+    local startX = (UI_WIDTH - totalTabWidth) / 2
+
+    for i, name in ipairs(tabs) do
+        local btn = CreateFrame("Button", nil, f)
+        btn:SetSize(btnWidth, 30)
+        btn:SetPoint("TOPLEFT", startX + ((i-1)*(btnWidth + gap)), tabY)
+        
+        -- RESTORED: Background Texture Creation
+        btn.bg = btn:CreateTexture(nil, "BACKGROUND")
+        btn.bg:SetAllPoints()
+        btn.bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+        btn.bg:SetVertexColor(0.2, 0.2, 0.2, 1)
+        
+        btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        btn.text:SetPoint("CENTER")
+        btn.text:SetText(name:upper())
+        btn.text:SetTextColor(1, 1, 1)
+        btn.text:SetFont(FONT_MAIN, 12) 
+        
+        btn:SetScript("OnClick", function() self:SwitchTab(name) end)
+        
+        -- Logic for Hover Effects
+        btn:SetScript("OnEnter", function(s) 
+            if s.bg then s.bg:SetVertexColor(1, 0.2, 0.2, 1) end -- Bright Red
+        end)
+        btn:SetScript("OnLeave", function(s)
+            if not s.bg then return end
+            if s.selected then
+                s.bg:SetVertexColor(1, 0.2, 0.2, 1) -- Keep Red if selected
+            else
+                s.bg:SetVertexColor(0.2, 0.2, 0.2, 1) -- Revert to Grey
+            end
+        end)
+        
+        btn.tabName = name
+        self.tabButtons[name] = btn
+    end
+
+    f.content = CreateFrame("Frame", nil, f)
+    f.content:SetPoint("TOPLEFT", 20, tabY - 40)
+    f.content:SetPoint("BOTTOMRIGHT", -20, 20)
+    
+    local AceGUI = LibStub("AceGUI-3.0")
+    f.aceContainer = AceGUI:Create("SimpleGroup")
+    f.aceContainer:SetLayout("Fill")
+    f.aceContainer.frame:SetParent(f.content)
+    f.aceContainer.frame:SetAllPoints()
+    f.aceContainer.frame:Show()
+
+    self.ConfigFrame = f
+    self:SwitchTab("General")
+end
+
+function Stautist:CreateHeaderButton(parent, text, point, x, y, script)
+    local btn = CreateFrame("Button", nil, parent)
+    btn:SetSize(80, 25)
+    btn:SetPoint(point, x, y)
+    
+    btn.bg = btn:CreateTexture(nil, "BACKGROUND")
+    btn.bg:SetAllPoints()
+    btn.bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    btn.bg:SetVertexColor(0.6, 0.1, 0.1, 1) -- Default Dark Red
+    
+    btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    btn.text:SetPoint("CENTER")
+    btn.text:SetText(text)
+    btn.text:SetFont(FONT_MAIN, 10, "BOLD")
+    
+    btn:SetScript("OnClick", script)
+    -- HOVER EFFECTS
+    btn:SetScript("OnEnter", function(s) s.bg:SetVertexColor(1, 0.2, 0.2, 1) end) -- Bright Red
+    btn:SetScript("OnLeave", function(s) s.bg:SetVertexColor(0.6, 0.1, 0.1, 1) end) -- Back to Dark Red
+    return btn
+end
+
+function Stautist:NavigateBack()
+    print("Back button clicked - History navigation to be implemented.")
+end
+
+function Stautist:SwitchTab(tabName)
+    for name, btn in pairs(self.tabButtons) do
+        if name == tabName then
+            btn.selected = true
+            btn.bg:SetVertexColor(unpack(C_RED))
+            btn.text:SetTextColor(1, 1, 1)
+        else
+            btn.selected = false
+            btn.bg:SetVertexColor(0.2, 0.2, 0.2)
+            btn.text:SetTextColor(1, 1, 1)
+        end
+    end
+
+    self.ConfigFrame.aceContainer:ReleaseChildren()
+    
+    if tabName == "General" then
+        self:DrawGeneralContent(self.ConfigFrame.aceContainer)
+    elseif tabName == "Leaderboard" then
+        self:DrawLeaderboardContent(self.ConfigFrame.aceContainer)
+    elseif tabName == "Black Book" then
+        self:DrawSocialContent(self.ConfigFrame.aceContainer)
+    elseif tabName == "Logs" then
+        self:DrawLogsContent(self.ConfigFrame.aceContainer)
+    elseif tabName == "Guild" then
+        self:DrawPlaceholderContent(self.ConfigFrame.aceContainer, "coming soon maybe idk")
+    end
+end
+
+-- ============================================================================
+-- CONTENT DRAWING
+-- ============================================================================
+
+function Stautist:DrawGeneralContent(container)
+    container:SetLayout("Fill") 
+    local AceGUI = LibStub("AceGUI-3.0")
+    local scroll = AceGUI:Create("ScrollFrame")
+    scroll:SetLayout("Flow")
+    container:AddChild(scroll)
+
+    -- Helper to create a specific row container
+    local function CreateRow()
+        local row = AceGUI:Create("SimpleGroup")
+        row:SetLayout("Flow")
+        row:SetFullWidth(true)
+        return row
+    end
+
+    -- ============================================================
+    -- 1. VISUAL SETTINGS
+    -- ============================================================
+    local grpVis = AceGUI:Create("InlineGroup")
+    grpVis:SetTitle("Visual Settings")
+    grpVis:SetLayout("Flow")
+    grpVis:SetFullWidth(true)
+    ApplyFont(grpVis, 12)
+    scroll:AddChild(grpVis)
+
+    -- ROW 1: HUD Scale | HUD Width
+    local row1 = CreateRow()
+    grpVis:AddChild(row1)
+
+    local sldHud = AceGUI:Create("Slider")
+    sldHud:SetLabel("HUD Scale")
+    sldHud:SetSliderValues(0.5, 2.0, 0.1)
+    sldHud:SetValue(self.db.profile.timer_scale or 1.0)
+    sldHud:SetRelativeWidth(0.48) -- 48% to leave gap
+    sldHud:SetCallback("OnMouseUp", function(widget) 
+        local val = widget:GetValue(); val = math.floor(val * 10 + 0.5) / 10 
+        self.db.profile.timer_scale = val
+        if self.hudFrame then self.hudFrame:SetScale(val) end
+    end)
+    ApplyFont(sldHud)
+    row1:AddChild(sldHud)
+
+    local sldWidth = AceGUI:Create("Slider")
+    sldWidth:SetLabel("HUD Base Width")
+    sldWidth:SetSliderValues(200, 500, 10)
+    sldWidth:SetValue(self.db.profile.hud_width or 240)
+    sldWidth:SetRelativeWidth(0.48)
+    sldWidth:SetCallback("OnMouseUp", function(widget)
+        self.db.profile.hud_width = widget:GetValue()
+        if self.UpdateHUDLayout then self:UpdateHUDLayout() end
+    end)
+    ApplyFont(sldWidth)
+    row1:AddChild(sldWidth)
+
+    -- ROW 2: Menu Scale | Behavior
+    local row2 = CreateRow()
+    grpVis:AddChild(row2)
+
+    local sldUI = AceGUI:Create("Slider")
+    sldUI:SetLabel("Menu Scale")
+    sldUI:SetSliderValues(0.5, 2.0, 0.1)
+    sldUI:SetValue(self.db.profile.config_scale or 1.0)
+    sldUI:SetRelativeWidth(0.48)
+    sldUI:SetCallback("OnMouseUp", function(widget)
+        local val = widget:GetValue(); val = math.floor(val * 10 + 0.5) / 10
+        self.db.profile.config_scale = val
+        if self.ConfigFrame then self.ConfigFrame:SetScale(val) end
+    end)
+    ApplyFont(sldUI)
+    row2:AddChild(sldUI)
+
+    local dropBehav = AceGUI:Create("Dropdown")
+    dropBehav:SetLabel("HUD Visibility Behavior")
+    dropBehav:SetList({ ["Show"] = "Always Show", ["Ask"] = "Ask on Enter", ["Hide"] = "Always Hide" })
+    dropBehav:SetValue(self.db.profile.hud_behavior or "Show")
+    dropBehav:SetRelativeWidth(0.48)
+    dropBehav:SetCallback("OnValueChanged", function(_, _, val)
+        self.db.profile.hud_behavior = val
+        if self.db.char.active_run_state.is_running then
+            if val == "Show" then self:ShowHUD() elseif val == "Hide" then self:HideHUD() end
+        end
+    end)
+    ApplyFont(dropBehav)
+    row2:AddChild(dropBehav)
+
+    -- ROW 3: Lock | Reset
+    local row3 = CreateRow()
+    grpVis:AddChild(row3)
+
+    local chkLock = AceGUI:Create("CheckBox")
+    chkLock:SetLabel("Lock HUD Position")
+    chkLock:SetRelativeWidth(0.48)
+    chkLock:SetValue(self.db.profile.timer_locked)
+    chkLock:SetCallback("OnValueChanged", function(_, _, value)
+        self.db.profile.timer_locked = value
+        if self.hudFrame then self.hudFrame:EnableMouse(not value) end
+    end)
+    ApplyFont(chkLock)
+    row3:AddChild(chkLock)
+
+    local btnResetHUD = AceGUI:Create("Button")
+    btnResetHUD:SetText("Reset HUD Position")
+    btnResetHUD:SetRelativeWidth(0.48)
+    btnResetHUD:SetCallback("OnClick", function() Stautist:OnChatCommand("resethud") end)
+    ApplyFont(btnResetHUD)
+    row3:AddChild(btnResetHUD)
+
+    -- ROW 4: Splits | Wipes
+    local row4 = CreateRow()
+    grpVis:AddChild(row4)
+
+    local chkSplits = AceGUI:Create("CheckBox")
+    chkSplits:SetLabel("Show Split Timers (+/-)")
+    chkSplits:SetValue(self.db.profile.show_splits)
+    chkSplits:SetRelativeWidth(0.48)
+    chkSplits:SetCallback("OnValueChanged", function(_, _, value) 
+        self.db.profile.show_splits = value; if self.UpdateHUDLayout then self:UpdateHUDLayout() end 
+    end)
+    ApplyFont(chkSplits)
+    row4:AddChild(chkSplits)
+
+    local chkWipes = AceGUI:Create("CheckBox")
+    chkWipes:SetLabel("Show Wipe Counter")
+    chkWipes:SetValue(self.db.profile.show_wipes)
+    chkWipes:SetRelativeWidth(0.48)
+    chkWipes:SetCallback("OnValueChanged", function(_, _, value) 
+        self.db.profile.show_wipes = value; if self.UpdateHUDLayout then self:UpdateHUDLayout() end 
+    end)
+    ApplyFont(chkWipes)
+    row4:AddChild(chkWipes)
+
+    -- ============================================================
+    -- 2. FONT SETTINGS
+    -- ============================================================
+    local grpFonts = AceGUI:Create("InlineGroup")
+    grpFonts:SetTitle("Font Settings (Requires Reload)")
+    grpFonts:SetLayout("Flow")
+    grpFonts:SetFullWidth(true)
+    ApplyFont(grpFonts, 12)
+    scroll:AddChild(grpFonts)
+
+    local fontList = {
+        ["Interface\\AddOns\\Stautist\\Fonts\\Molard.ttf"] = "Molard (Custom Title)",
+        ["Interface\\AddOns\\Stautist\\Fonts\\CORPOREA.TTF"] = "Corporea (Custom Main)",
+        ["Fonts\\ARIALN.TTF"] = "Standard (Arial)",
+        ["Fonts\\FRIZQT__.TTF"] = "Warcraft (Friz)",
+        ["Fonts\\MORPHEUS.TTF"] = "RPG (Morpheus)",
+        ["Fonts\\SKURRI.TTF"] = "Combat (Skurri)",
+    }
+
+    local dropTitleFont = AceGUI:Create("Dropdown")
+    dropTitleFont:SetLabel("Dungeon Title Font")
+    dropTitleFont:SetList(fontList)
+    dropTitleFont:SetValue(self.db.profile.font_title)
+    dropTitleFont:SetRelativeWidth(0.48)
+    dropTitleFont:SetCallback("OnValueChanged", function(_, _, val)
+        if val ~= self.db.profile.font_title then
+            self.db.profile.font_title = val
+            StaticPopup_Show("STAUTIST_RELOAD")
+        end
+    end)
+    ApplyFont(dropTitleFont)
+    grpFonts:AddChild(dropTitleFont)
+
+    local dropGenFont = AceGUI:Create("Dropdown")
+    dropGenFont:SetLabel("Boss & Timer Font")
+    dropGenFont:SetList(fontList)
+    dropGenFont:SetValue(self.db.profile.font_general)
+    dropGenFont:SetRelativeWidth(0.48)
+    dropGenFont:SetCallback("OnValueChanged", function(_, _, val)
+        if val ~= self.db.profile.font_general then
+            self.db.profile.font_general = val
+            StaticPopup_Show("STAUTIST_RELOAD")
+        end
+    end)
+    ApplyFont(dropGenFont)
+    grpFonts:AddChild(dropGenFont)
+
+    -- ============================================================
+    -- 3. AUTOMATION
+    -- ============================================================
+    local grpAuto = AceGUI:Create("InlineGroup")
+    grpAuto:SetTitle("Automation")
+    grpAuto:SetLayout("Flow")
+    grpAuto:SetFullWidth(true)
+    ApplyFont(grpAuto, 12)
+    scroll:AddChild(grpAuto)
+
+    local function AddAutoCheck(label, key)
+        local c = AceGUI:Create("CheckBox")
+        c:SetLabel(label)
+        c:SetRelativeWidth(0.48)
+        c:SetValue(self.db.profile[key])
+        c:SetCallback("OnValueChanged", function(_, _, value) self.db.profile[key] = value end)
+        ApplyFont(c)
+        grpAuto:AddChild(c)
+    end
+
+    AddAutoCheck("Announce 5/Hour Limit", "announce_lockouts")
+    AddAutoCheck("Announce Instance Resets", "announce_resets")
+    AddAutoCheck("Announce Run Completion", "announce_completion")
+    AddAutoCheck("Announce Fastest Kills (PB)", "announce_fastest_kill")
+
+    -- ============================================================
+    -- 4. DATA MANAGEMENT
+    -- ============================================================
+    local grpData = AceGUI:Create("InlineGroup")
+    grpData:SetTitle("Data Management")
+    grpData:SetLayout("Flow")
+    grpData:SetFullWidth(true)
+    ApplyFont(grpData, 12)
+    scroll:AddChild(grpData)
+
+    local btnExport = AceGUI:Create("Button")
+    btnExport:SetText("Export Data")
+    btnExport:SetRelativeWidth(0.32)
+    btnExport:SetCallback("OnClick", function() self:ShowExportImportWindow("EXPORT") end)
+    ApplyFont(btnExport)
+    grpData:AddChild(btnExport)
+
+    local btnImport = AceGUI:Create("Button")
+    btnImport:SetText("Import Data")
+    btnImport:SetRelativeWidth(0.32)
+    btnImport:SetCallback("OnClick", function() self:ShowExportImportWindow("IMPORT") end)
+    ApplyFont(btnImport)
+    grpData:AddChild(btnImport)
+
+    local btnWipe = AceGUI:Create("Button")
+    btnWipe:SetText("Wipe dB") 
+    btnWipe:SetRelativeWidth(0.32)
+    btnWipe:SetCallback("OnClick", function() StaticPopup_Show("STAUTIST_RESET_1") end)
+    ApplyFont(btnWipe)
+    grpData:AddChild(btnWipe)
+end
+-- ============================================================================
+-- LEADERBOARD TAB
+-- ============================================================================
+
+function Stautist:DrawLeaderboardContent(container)
+    local AceGUI = LibStub("AceGUI-3.0")
+    container:SetLayout("Flow")
+
+    self.lb_filters = self.lb_filters or {
+        expansion = "All", type = "All", zone = "All", difficulty = "All", size = "All", show_partial = false
+    }
+
+   -- Filter Container (Table Layout - Aggressive Minimums)
+    local headerGrp = AceGUI:Create("SimpleGroup")
+    headerGrp:SetLayout("Table")
+    headerGrp:SetUserData("table", {
+        columns = {
+            {width = 70},              -- 1. Checkbox (Fixed)
+            {weight = 1, min = 125},   -- 2. Expansion (Widened)
+            {weight = 1, min = 115},   -- 3. Type (Widened)
+            {weight = 1, min = 115},   -- 4. Difficulty (Widened)
+            {weight = 0.5, min = 70},  -- 5. Size (Fixed small but visible)
+            {weight = 2, min = 250},   -- 6. Zone (Massively Widened)
+        },
+        space = 10,
+        align = "BOTTOM"
+    })
+    headerGrp:SetFullWidth(true)
+    container:AddChild(headerGrp)
+
+    -- 1. Checkbox
+    local chkPartial = AceGUI:Create("CheckBox")
+    chkPartial:SetLabel("Partial")
+    chkPartial:SetValue(self.lb_filters.show_partial)
+    chkPartial:SetCallback("OnValueChanged", function(_, _, val)
+        self.lb_filters.show_partial = val; self:RefreshLeaderboard()
+    end)
+    ApplyFont(chkPartial)
+    headerGrp:AddChild(chkPartial)
+
+    -- 2. Expansion
+    local dropExp = AceGUI:Create("Dropdown")
+    dropExp:SetLabel("Expansion")
+    dropExp:SetList({ ["All"]="Show All", ["Classic"]="Classic", ["TBC"]="TBC", ["WotLK"]="WotLK" })
+    dropExp:SetValue(self.lb_filters.expansion)
+    dropExp:SetCallback("OnValueChanged", function(_, _, val) 
+        self.lb_filters.expansion = val; self.lb_filters.zone = "All"; self:RefreshLeaderboard() 
+    end)
+    ApplyFont(dropExp)
+    headerGrp:AddChild(dropExp)
+
+    -- 3. Type
+    local dropType = AceGUI:Create("Dropdown")
+    dropType:SetLabel("Type")
+    dropType:SetList({ ["All"]="All", ["dungeon"]="Dungeon", ["raid"]="Raid" })
+    dropType:SetValue(self.lb_filters.type)
+    dropType:SetCallback("OnValueChanged", function(_, _, val) 
+        self.lb_filters.type = val; self.lb_filters.zone = "All"; self:RefreshLeaderboard() 
+    end)
+    ApplyFont(dropType)
+    headerGrp:AddChild(dropType)
+
+    -- 4. Difficulty
+    local dropDiff = AceGUI:Create("Dropdown")
+    dropDiff:SetLabel("Difficulty")
+    dropDiff:SetList({ ["All"]="All", ["Normal"]="Normal", ["Heroic"]="Heroic" })
+    dropDiff:SetValue(self.lb_filters.difficulty)
+    dropDiff:SetCallback("OnValueChanged", function(_, _, val)
+        self.lb_filters.difficulty = val; self:RefreshLeaderboard()
+    end)
+    ApplyFont(dropDiff)
+    headerGrp:AddChild(dropDiff)
+
+    -- 5. Size
+    local dropSize = AceGUI:Create("Dropdown")
+    dropSize:SetLabel("Size")
+    dropSize:SetList({ ["All"]="All", ["5"]="5", ["10"]="10", ["25"]="25", ["40"]="40" })
+    dropSize:SetValue(self.lb_filters.size or "All")
+    dropSize:SetCallback("OnValueChanged", function(_, _, val)
+        self.lb_filters.size = val; self:RefreshLeaderboard()
+    end)
+    ApplyFont(dropSize)
+    headerGrp:AddChild(dropSize)
+
+    -- 6. Zone
+    local zoneList = {["All"] = "All Zones"}
+    if self.BossDB then
+        for id, data in pairs(self.BossDB) do
+            local tierMatch = (self.lb_filters.expansion == "All" or data.tier == self.lb_filters.expansion)
+            local typeMatch = (self.lb_filters.type == "All" or data.type == self.lb_filters.type)
+            if tierMatch and typeMatch then zoneList[id] = data.name end
+        end
+    end
+    local dropZone = AceGUI:Create("Dropdown")
+    dropZone:SetLabel("Zone")
+    dropZone:SetList(zoneList)
+    dropZone:SetValue(self.lb_filters.zone)
+    dropZone:SetCallback("OnValueChanged", function(_, _, val) 
+        self.lb_filters.zone = val; self:RefreshLeaderboard() 
+    end)
+    self.lb_dropZone = dropZone 
+    ApplyFont(dropZone)
+    headerGrp:AddChild(dropZone)
+
+
+
+
+
+
+
+    local scroll = AceGUI:Create("ScrollFrame")
+    scroll:SetLayout("Flow")
+    scroll:SetFullWidth(true)
+    scroll:SetHeight(350) 
+    container:AddChild(scroll)
+    
+    self.lb_scroll = scroll 
+    self:RefreshLeaderboard()
+end
+
+function Stautist:RefreshLeaderboard()
+    if not self.lb_scroll then return end
+    self.lb_scroll:ReleaseChildren()
+    local AceGUI = LibStub("AceGUI-3.0")
+
+    if self.lb_dropZone and self.BossDB then
+        local newList = {["All"] = "All Zones"}
+        for id, data in pairs(self.BossDB) do
+            local tierMatch = (self.lb_filters.expansion == "All" or data.tier == self.lb_filters.expansion)
+            local typeMatch = (self.lb_filters.type == "All" or data.type == self.lb_filters.type)
+            
+            if tierMatch and typeMatch then
+                newList[id] = data.name
+            end
+        end
+        self.lb_dropZone:SetList(newList)
+        if self.lb_filters.zone ~= "All" and not newList[self.lb_filters.zone] then 
+            self.lb_filters.zone = "All" 
+            self.lb_dropZone:SetValue("All")
+        end
+    end
+
+    local runs = {}
+    local history = self.db.global.run_history or {}
+    
+    print("|cff00ccff[Stautist DB]|r Total History: " .. #history)
+    
+    for i, run in ipairs(history) do
+        run.original_index = i 
+        
+        local isValid = true
+        
+        if not run.zone_id then 
+            print("Dropped Run #"..i..": No Zone ID")
+            isValid = false 
+        else
+            local zData = self.BossDB[run.zone_id]
+            if zData then
+                if self.lb_filters.expansion ~= "All" and zData.tier ~= self.lb_filters.expansion then isValid = false end
+                if self.lb_filters.type ~= "All" and zData.type ~= self.lb_filters.type then isValid = false end
+            end
+            
+            if self.lb_filters.difficulty ~= "All" then
+                local runDiff = run.difficulty or "Normal"
+                if runDiff ~= self.lb_filters.difficulty then isValid = false end
+            end
+            if self.lb_filters.size and self.lb_filters.size ~= "All" then
+                -- Convert to string for comparison
+                local rSize = tostring(run.size or "5") -- Default old runs to 5 or ignore?
+                if rSize ~= self.lb_filters.size then isValid = false end
+            end
+            if self.lb_filters.zone ~= "All" and run.zone_id ~= self.lb_filters.zone then isValid = false end
+        end
+        if not run.success and not self.lb_filters.show_partial then
+            isValid = false
+        end
+        if isValid then
+            table.insert(runs, run)
+        end
+    end
+
+    print("|cff00ccff[Stautist DB]|r Runs after filter: " .. #runs)
+
+    table.sort(runs, function(a, b) 
+        local tA = a.total_time or 999999
+        local tB = b.total_time or 999999
+        return tA < tB 
+    end)
+
+    if #runs == 0 then
+        local lbl = AceGUI:Create("Label")
+        lbl:SetText("\n\nNo runs found matching filters.")
+        lbl:SetColor(0.5, 0.5, 0.5)
+        lbl:SetFullWidth(true)
+        lbl:SetJustifyH("CENTER")
+        self.lb_scroll:AddChild(lbl)
+    else
+        for i, run in ipairs(runs) do
+            local status, err = pcall(function() self:CreateLeaderboardRow(self.lb_scroll, i, run) end)
+            if not status then print("|cffff0000[Error Drawing Row]:|r " .. err) end
+        end
+    end
+end
+
+function Stautist:CreateLeaderboardRow(container, rank, run)
+    local AceGUI = LibStub("AceGUI-3.0")
+    local ICONS = {
+        ["WARRIOR"] = {0, 0.25, 0, 0.25}, ["MAGE"] = {0.25, 0.5, 0, 0.25},
+        ["ROGUE"] = {0.5, 0.75, 0, 0.25}, ["DRUID"] = {0.75, 1, 0, 0.25},
+        ["HUNTER"] = {0, 0.25, 0.25, 0.5}, ["SHAMAN"] = {0.25, 0.5, 0.25, 0.5},
+        ["PRIEST"] = {0.5, 0.75, 0.25, 0.5}, ["WARLOCK"] = {0.75, 1, 0.25, 0.5},
+        ["PALADIN"] = {0, 0.25, 0.5, 0.75}, ["DEATHKNIGHT"] = {0.25, 0.5, 0.5, 0.75},
+    }
+    local CLASS_ORDER = {"WARRIOR", "PALADIN", "DEATHKNIGHT", "SHAMAN", "HUNTER", "DRUID", "ROGUE", "MAGE", "WARLOCK", "PRIEST"}
+
+    local grp = AceGUI:Create("SimpleGroup")
+    grp:SetLayout("Flow")
+    grp:SetFullWidth(true)
+
+    -- DATA PREPARATION
+    local zName = "Unknown Zone"
+    if run.zone_id and self.BossDB[run.zone_id] then 
+        zName = self.BossDB[run.zone_id].name 
+    end
+    local displayName = zName
+    if run.partial then displayName = displayName .. " |cffffcc00*|r" end 
+
+    -- TOOLTIP FUNCTION (UPDATED)
+    local function ShowTooltip(widget)
+        GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
+        GameTooltip:AddLine(zName, 1, 1, 1) -- Header
+        
+        -- Basic Stats
+        local wipes = run.wipes or 0
+        local wipeColor = (wipes > 0) and "|cffff0000" or "|cff888888"
+        GameTooltip:AddLine(string.format("Time: %s   Wipes: %s%d", self:FormatTime(run.total_time, true), wipeColor, wipes), 1, 1, 1)
+
+        -- Status
+        if run.partial then
+            GameTooltip:AddLine("Progress: " .. (run.progress or "?/?") .. " (Partial)", 1, 0.8, 0)
+        else
+            GameTooltip:AddLine("Status: Full Clear", 0, 1, 0)
+        end
+        GameTooltip:AddLine("Tier: " .. (run.tier or "Classic"), 0.6, 0.6, 0.6)
+
+        -- BOSS KILLS & SPLITS (NEW)
+        if run.boss_kills then
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddLine("Boss Splits & Kills:", 1, 0.8, 0)
+            
+            -- Sort Bosses by Time (Split Time)
+            local sortedBosses = {}
+            for id, data in pairs(run.boss_kills) do
+                table.insert(sortedBosses, data)
+            end
+            table.sort(sortedBosses, function(a,b) return (a.split_time or 0) < (b.split_time or 0) end)
+
+            for _, b in ipairs(sortedBosses) do
+                local bName = b.name or "Unknown"
+                local sTime = self:FormatTime(b.split_time, true) -- Split (Run time)
+                local kTime = self:FormatTime(b.duration, true)   -- Duration (Kill time)
+                
+                -- Format: BossName   Split   (KillTime)
+                -- Using double columns logic for tooltip is hard, so we use spacing
+                GameTooltip:AddDoubleLine(bName, string.format("|cffffffff%s|r (|cff00ff00%s|r)", sTime, kTime))
+            end
+        end
+        
+        GameTooltip:Show()
+    end
+    local function HideTooltip() GameTooltip:Hide() end
+
+    -- 1. SPACER
+    local spacer = AceGUI:Create("Label")
+    spacer:SetText(" ")
+    spacer:SetWidth(30)
+    grp:AddChild(spacer)
+
+    -- 2. RANK (Interactive)
+    local lblRank = AceGUI:Create("InteractiveLabel")
+    lblRank:SetText(tostring(rank) .. ".")
+    lblRank:SetWidth(40)
+    lblRank:SetColor(1, 0.8, 0)
+    lblRank:SetCallback("OnEnter", ShowTooltip)
+    lblRank:SetCallback("OnLeave", HideTooltip)
+    grp:AddChild(lblRank)
+
+    -- 3. ZONE NAME (Interactive)
+    local lblZone = AceGUI:Create("InteractiveLabel")
+    lblZone:SetText(displayName)
+    lblZone:SetWidth(240)
+    lblZone:SetColor(1, 1, 1)
+    lblZone:SetCallback("OnEnter", ShowTooltip)
+    lblZone:SetCallback("OnLeave", HideTooltip)
+    grp:AddChild(lblZone)
+
+    -- 4. TIME (Interactive)
+    local lblTime = AceGUI:Create("InteractiveLabel")
+    lblTime:SetText(self:FormatTime(run.total_time))
+    lblTime:SetWidth(90)
+    lblTime:SetColor(0, 1, 0)
+    lblTime:SetCallback("OnEnter", ShowTooltip)
+    lblTime:SetCallback("OnLeave", HideTooltip)
+    grp:AddChild(lblTime)
+
+    -- 5. ROSTER ICONS (UPDATED WITH LEVELS)
+    local iconContainer = AceGUI:Create("SimpleGroup")
+    iconContainer:SetWidth(270)
+    iconContainer:SetLayout("Flow")
+    grp:AddChild(iconContainer)
+
+    if run.roster and #run.roster > 0 then
+        local counts = {}
+        local names = {}
+        for _, player in ipairs(run.roster) do
+            local cls = "PRIEST"
+            if player.class and type(player.class) == "string" then
+                cls = player.class:upper():gsub("%s+", "")
+            end
+            counts[cls] = (counts[cls] or 0) + 1
+            if not names[cls] then names[cls] = "" end
+            
+            -- LEVEL DISPLAY ADDED HERE
+            local lvlStr = player.level and (" (Lvl " .. player.level .. ")") or ""
+            names[cls] = names[cls] .. player.name .. lvlStr .. "\n"
+        end
+
+        for _, cls in ipairs(CLASS_ORDER) do
+            if counts[cls] and counts[cls] > 0 then
+                local icon = AceGUI:Create("Icon")
+                icon:SetImageSize(18, 18)
+                icon:SetWidth(24)
+                local coords = ICONS[cls]
+                if coords then
+                    icon:SetImage("Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes", 
+                        coords[1], coords[2], coords[3], coords[4])
+                else
+                    icon:SetImage("Interface\\Icons\\INV_Misc_QuestionMark")
+                end
+                if counts[cls] > 1 then
+                    icon:SetLabel(tostring(counts[cls]))
+                    icon:SetLabelFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
+                end
+                
+                -- Icon Tooltip
+                icon:SetCallback("OnEnter", function(widget)
+                    GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
+                    GameTooltip:AddLine(names[cls], 1, 1, 1)
+                    GameTooltip:AddLine(" ")
+                    if run.wipes and run.wipes > 0 then GameTooltip:AddLine("Wipes: "..run.wipes, 1, 0.2, 0.2) end
+                    if run.partial then GameTooltip:AddLine("Progress: ".. (run.progress or "?"), 1, 0.8, 0) end
+                    GameTooltip:Show()
+                end)
+                icon:SetCallback("OnLeave", HideTooltip)
+                iconContainer:AddChild(icon)
+            end
+        end
+    else
+        local noData = AceGUI:Create("Label")
+        noData:SetText("-")
+        noData:SetWidth(20)
+        iconContainer:AddChild(noData)
+    end
+
+    -- 6. DATE (Interactive)
+    local lblDate = AceGUI:Create("InteractiveLabel")
+    lblDate:SetText(run.date or "N/A")
+    lblDate:SetWidth(120)
+    lblDate:SetColor(0.6, 0.6, 0.6)
+    lblDate:SetCallback("OnEnter", ShowTooltip)
+    lblDate:SetCallback("OnLeave", HideTooltip)
+    grp:AddChild(lblDate)
+
+    -- 7. DELETE BUTTON
+    local btnDel = AceGUI:Create("Icon")
+    btnDel:SetImage("Interface\\Buttons\\UI-GroupLoot-Pass-Up")
+    btnDel:SetImageSize(16, 16)
+    btnDel:SetWidth(20)
+    btnDel:SetCallback("OnClick", function()
+        if run.original_index then
+            StaticPopup_Show("STAUTIST_DELETE_RUN", nil, nil, run.original_index)
+        end
+    end)
+    btnDel:SetCallback("OnEnter", function(widget)
+        GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
+        GameTooltip:AddLine("Delete Entry", 1, 0.2, 0.2)
+        GameTooltip:Show()
+    end)
+    btnDel:SetCallback("OnLeave", HideTooltip)
+
+    grp:AddChild(btnDel)
+    
+    container:AddChild(grp)
+end
+
+-- ============================================================================
+-- SOCIAL LEDGER (Black Book)
+-- ============================================================================
+
+function Stautist:DrawSocialContent(container)
+    container:SetLayout("Flow") -- FIX: Ensure correct layout
+    
+    local AceGUI = LibStub("AceGUI-3.0")
+    
+    local header = AceGUI:Create("SimpleGroup")
+    header:SetFullWidth(true)
+    header:SetLayout("Flow")
+    container:AddChild(header)
+
+    -- Adjust spacers for visual centering (approx 25% left, 50% box, 25% right)
+    local sp1 = AceGUI:Create("Label"); sp1:SetText(" "); sp1:SetRelativeWidth(0.25); header:AddChild(sp1)
+
+    local searchBox = AceGUI:Create("EditBox")
+    searchBox:SetLabel("Search Player")
+    searchBox:SetRelativeWidth(0.50) -- Wider and centered
+    searchBox:DisableButton(true)
+    searchBox:SetCallback("OnTextChanged", function(widget, _, text)
+        self:RefreshSocialList(self.socialScroll, text)
+    end)
+    ApplyFont(searchBox)
+    header:AddChild(searchBox)
+    
+    local sp2 = AceGUI:Create("Label"); sp2:SetText(" "); sp2:SetRelativeWidth(0.25); header:AddChild(sp2)
+
+    local scroll = AceGUI:Create("ScrollFrame")
+    scroll:SetLayout("Flow")
+    scroll:SetFullWidth(true)
+    scroll:SetHeight(480)
+    container:AddChild(scroll)
+    self.socialScroll = scroll
+
+    self.socialDB = {}
+    local history = self.db.global.run_history or {}
+    for _, run in ipairs(history) do
+        if run.roster then
+            for _, char in ipairs(run.roster) do
+                if char.name ~= UnitName("player") then
+                    if not self.socialDB[char.name] then
+                        self.socialDB[char.name] = {
+                            name = char.name, class = char.class, runs = 0, history = {}
+                        }
+                    end
+                    local p = self.socialDB[char.name]
+                    p.runs = p.runs + 1
+                    table.insert(p.history, run)
+                end
+            end
+        end
+    end
+
+    self:RefreshSocialList(scroll, "")
+end
+
+function Stautist:RefreshSocialList(container, filter)
+    container:ReleaseChildren()
+    local AceGUI = LibStub("AceGUI-3.0")
+    
+    local list = {}
+    for _, data in pairs(self.socialDB or {}) do table.insert(list, data) end
+    table.sort(list, function(a,b) return a.runs > b.runs end)
+
+    for _, pData in ipairs(list) do
+        if filter == "" or string.find(string.lower(pData.name), string.lower(filter)) then
+            
+            local row = AceGUI:Create("SimpleGroup")
+            row:SetLayout("Flow")
+            row:SetFullWidth(true)
+            
+            -- Spacer to center the content in the list row
+            local rowSp = AceGUI:Create("Label"); rowSp:SetText(" "); rowSp:SetRelativeWidth(0.20); row:AddChild(rowSp)
+            
+            -- Icon
+            local icon = AceGUI:Create("Icon")
+            icon:SetImageSize(16, 16); icon:SetWidth(25)
+            local coords = CLASS_ICON_TCOORDS[pData.class:upper()] or {0,1,0,1}
+            icon:SetImage("Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes", unpack(coords))
+            row:AddChild(icon)
+
+            -- Name (Now Clickable & Hoverable)
+            local nameLbl = AceGUI:Create("InteractiveLabel")
+            local color = RAID_CLASS_COLORS[pData.class:upper()] or {r=1,g=1,b=1}
+            nameLbl:SetText(pData.name)
+            nameLbl:SetColor(color.r, color.g, color.b)
+            nameLbl:SetWidth(150)
+            
+            -- CLICK: Open Details
+            nameLbl:SetCallback("OnClick", function() self:ShowPlayerDetails(pData) end)
+            
+            -- HOVER: Show Summary
+            nameLbl:SetCallback("OnEnter", function(widget)
+                GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
+                GameTooltip:AddLine(pData.name, color.r, color.g, color.b)
+                GameTooltip:AddLine("Total Runs: " .. pData.runs, 1, 1, 1)
+                GameTooltip:AddLine(" ")
+                
+                -- Summary of last 3 runs
+                for i = 1, math.min(3, #pData.history) do
+                    local r = pData.history[i]
+                    local zName = (self.BossDB[r.zone_id] and self.BossDB[r.zone_id].name) or "Unknown"
+                    local wipeTxt = (r.wipes and r.wipes > 0) and (" |cffff0000("..r.wipes.." Wipes)|r") or ""
+                    GameTooltip:AddLine(string.format("%s: %s%s", zName, self:FormatTime(r.total_time), wipeTxt), 0.7, 0.7, 0.7)
+                end
+                if #pData.history > 3 then GameTooltip:AddLine("...and " .. (#pData.history - 3) .. " more.", 0.5, 0.5, 0.5) end
+                GameTooltip:AddLine("Click for full details", 0, 1, 0)
+                GameTooltip:Show()
+            end)
+            nameLbl:SetCallback("OnLeave", function() GameTooltip:Hide() end)
+            
+            row:AddChild(nameLbl)
+
+            -- Stats
+            local infoLbl = AceGUI:Create("Label")
+            infoLbl:SetText("Runs: " .. pData.runs)
+            infoLbl:SetWidth(100)
+            row:AddChild(infoLbl)
+
+            container:AddChild(row)
+        end
+    end
+end
+
+function Stautist:ShowPlayerDetails(pData)
+    local AceGUI = LibStub("AceGUI-3.0")
+    local f = AceGUI:Create("Frame")
+    
+    -- Class Color Title
+    local color = RAID_CLASS_COLORS[pData.class:upper()] or {r=1,g=1,b=1}
+    local hex = string.format("|cff%02x%02x%02x", color.r*255, color.g*255, color.b*255)
+    f:SetTitle("Details: " .. hex .. pData.name .. "|r")
+    
+    f:SetLayout("Flow")
+    f:SetWidth(450); f:SetHeight(500) -- Widened slightly for better text fit
+    f:SetCallback("OnClose", function(widget) AceGUI:Release(widget) end)
+    
+    local scroll = AceGUI:Create("ScrollFrame")
+    scroll:SetLayout("Flow"); scroll:SetFullWidth(true); scroll:SetHeight(420)
+    f:AddChild(scroll)
+
+    -- Sort history: Newest first
+    local sortedHistory = {}
+    for _, r in ipairs(pData.history) do table.insert(sortedHistory, r) end
+    table.sort(sortedHistory, function(a,b) 
+        -- Fallback for sorting if date format varies, though usually standardized
+        return a.date > b.date 
+    end)
+
+    for _, run in ipairs(sortedHistory) do
+        local grp = AceGUI:Create("SimpleGroup")
+        grp:SetLayout("Flow"); grp:SetFullWidth(true)
+        
+        local zName = (self.BossDB[run.zone_id] and self.BossDB[run.zone_id].name) or "Unknown"
+        local wipeStr = (run.wipes and run.wipes > 0) and ("|cffff0000" .. run.wipes .. " Wipes|r") or "|cff00ff00Clean|r"
+        local diffColor = (run.difficulty == "Heroic") and "|cffffcc00" or "|cffaaaaaa"
+        
+        -- FORMAT:
+        -- Date | Zone (Heroic)
+        -- Time | Wipes
+        
+        local line1 = string.format("|cff888888%s|r  |cffffd700%s|r %s(%s)|r", run.date, zName, diffColor, run.difficulty)
+        local line2 = string.format("Time: |cffffffff%s|r   %s", self:FormatTime(run.total_time, true), wipeStr)
+            
+        -- Use InteractiveLabel for Tooltip
+        local lbl = AceGUI:Create("InteractiveLabel")
+        lbl:SetText(line1 .. "\n" .. line2)
+        lbl:SetFullWidth(true)
+        lbl:SetFont(self.FONT or "Fonts\\ARIALN.TTF", 12)
+        
+        -- RICH TOOLTIP LOGIC (Replicated from Leaderboard)
+        lbl:SetCallback("OnEnter", function(widget)
+            GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
+            GameTooltip:AddLine(zName, 1, 1, 1)
+            
+            -- Basic Stats
+            GameTooltip:AddLine(string.format("Time: %s   Wipes: %d", self:FormatTime(run.total_time, true), run.wipes or 0), 1, 1, 1)
+
+            -- Boss Splits/Kills
+            if run.boss_kills then
+                GameTooltip:AddLine(" ")
+                GameTooltip:AddLine("Boss Splits & Kills:", 1, 0.8, 0)
+                local sortedBosses = {}
+                for id, data in pairs(run.boss_kills) do table.insert(sortedBosses, data) end
+                table.sort(sortedBosses, function(a,b) return (a.split_time or 0) < (b.split_time or 0) end)
+
+                for _, b in ipairs(sortedBosses) do
+                    local bName = b.name or "Unknown"
+                    local sTime = self:FormatTime(b.split_time, true)
+                    local kTime = self:FormatTime(b.duration, true)
+                    GameTooltip:AddDoubleLine(bName, string.format("|cffffffff%s|r (|cff00ff00%s|r)", sTime, kTime))
+                end
+            end
+
+            -- Roster with Levels
+            if run.roster then
+                GameTooltip:AddLine(" ")
+                GameTooltip:AddLine("Group Members:", 1, 0.8, 0)
+                for _, p in ipairs(run.roster) do
+                    local c = RAID_CLASS_COLORS[(p.class or "PRIEST"):upper()] or {r=0.7,g=0.7,b=0.7}
+                    local lvlStr = p.level and (" (Lvl " .. p.level .. ")") or ""
+                    GameTooltip:AddLine(p.name .. lvlStr, c.r, c.g, c.b)
+                end
+            end
+            GameTooltip:Show()
+        end)
+        lbl:SetCallback("OnLeave", function() GameTooltip:Hide() end)
+
+        grp:AddChild(lbl)
+        
+        local div = AceGUI:Create("Heading"); div:SetFullWidth(true); div:SetHeight(5)
+        grp:AddChild(div)
+        
+        scroll:AddChild(grp)
+    end
+end
+
+-- ============================================================================
+-- LOGS TAB
+-- ============================================================================
+
+function Stautist:DrawLogsContent(container)
+    container:SetLayout("Flow")
+    local AceGUI = LibStub("AceGUI-3.0")
+    
+    self:CleanupInstanceLog()
+
+    -- NAVIGATION BUTTONS
+    local navGrp = AceGUI:Create("SimpleGroup")
+    navGrp:SetLayout("Flow")
+    navGrp:SetFullWidth(true)
+    container:AddChild(navGrp)
+
+    -- Spacer Left (Centering)
+    local spNav = AceGUI:Create("Label"); spNav:SetText(" "); spNav:SetRelativeWidth(0.15); navGrp:AddChild(spNav)
+
+    local btnLedger = AceGUI:Create("Button")
+    btnLedger:SetText("Full Run Ledger")
+    btnLedger:SetRelativeWidth(0.35)
+    btnLedger:SetCallback("OnClick", function() self:OpenFullLedgerWindow() end)
+    ApplyFont(btnLedger)
+    navGrp:AddChild(btnLedger)
+
+    local btnBossKills = AceGUI:Create("Button")
+    btnBossKills:SetText("Boss Kills") -- RENAMED
+    btnBossKills:SetRelativeWidth(0.35)
+    btnBossKills:SetCallback("OnClick", function() 
+        container:ReleaseChildren()
+        self:DrawBossKillsView(container) 
+    end)
+    ApplyFont(btnBossKills)
+    navGrp:AddChild(btnBossKills)
+
+    local spacer = AceGUI:Create("Label"); spacer:SetText(" "); spacer:SetFullWidth(true); container:AddChild(spacer)
+    
+    local scroll = AceGUI:Create("ScrollFrame")
+    scroll:SetLayout("Flow")
+    scroll:SetFullWidth(true)
+    scroll:SetHeight(350)
+    container:AddChild(scroll)
+    
+    -- ==========================
+    -- HOURLY LIMIT TRACKER
+    -- ==========================
+    local grpLimit = AceGUI:Create("SimpleGroup")
+    grpLimit:SetLayout("Flow")
+    grpLimit:SetFullWidth(true)
+    scroll:AddChild(grpLimit)
+
+    -- Custom Centered Header
+    local headerLimit = AceGUI:Create("Label")
+    headerLimit:SetText("HOURLY LIMIT TRACKER")
+    headerLimit:SetFont(self.db.profile.font_title or "Fonts\\FRIZQT__.TTF", 14, "OUTLINE")
+    headerLimit:SetColor(1, 0.82, 0) -- Gold
+    headerLimit:SetFullWidth(true)
+    headerLimit:SetJustifyH("CENTER")
+    grpLimit:AddChild(headerLimit)
+    
+    -- Divider
+    local div1 = AceGUI:Create("Heading"); div1:SetFullWidth(true); div1:SetHeight(10); grpLimit:AddChild(div1)
+
+    local logDB = self.db.char.instance_log or {}
+    local count = #logDB
+    local colorHex = (count >= 5) and "|cffff0000" or (count >= 3) and "|cffffcc00" or "|cff00ff00"
+    
+    local limitText = AceGUI:Create("Label")
+    limitText:SetText(string.format("Instances entered in last 60 min: %s%d / 5|r", colorHex, count))
+    limitText:SetFont("Fonts\\FRIZQT__.TTF", 14, "OUTLINE")
+    limitText:SetFullWidth(true)
+    limitText:SetJustifyH("CENTER")
+    grpLimit:AddChild(limitText)
+
+    if count > 0 then
+        local oldestTime = logDB[1].time
+        local timeLeft = (oldestTime + 3600) - time()
+        if timeLeft > 0 then
+            local m = math.floor(timeLeft / 60)
+            local s = timeLeft % 60
+            local nextFree = AceGUI:Create("Label")
+            nextFree:SetText(string.format("Next slot opens in: |cff00ccff%d min %d sec|r", m, s))
+            nextFree:SetFullWidth(true)
+            nextFree:SetJustifyH("CENTER")
+            grpLimit:AddChild(nextFree)
+        end
+        
+        local spacer2 = AceGUI:Create("Label"); spacer2:SetText("\nRecent Entries:"); spacer2:SetFullWidth(true); spacer2:SetJustifyH("CENTER"); grpLimit:AddChild(spacer2)
+        for i = count, 1, -1 do
+            local log = logDB[i]
+            local ago = math.floor((time() - log.time) / 60)
+            local row = AceGUI:Create("Label")
+            row:SetText(string.format("- %s (%d mins ago)", log.name or "Unknown", ago))
+            row:SetColor(0.7, 0.7, 0.7)
+            row:SetFullWidth(true)
+            row:SetJustifyH("CENTER")
+            grpLimit:AddChild(row)
+        end
+    else
+        local row = AceGUI:Create("Label"); row:SetText("\nNo instances entered recently."); row:SetColor(0.5, 0.5, 0.5); row:SetFullWidth(true); row:SetJustifyH("CENTER"); grpLimit:AddChild(row)
+    end
+
+    -- Spacer
+    local spG = AceGUI:Create("Label"); spG:SetText(" "); spG:SetHeight(20); spG:SetFullWidth(true); scroll:AddChild(spG)
+
+    -- ==========================
+    -- ACTIVE LOCKOUTS
+    -- ==========================
+    local grpLock = AceGUI:Create("SimpleGroup")
+    grpLock:SetLayout("Flow")
+    grpLock:SetFullWidth(true)
+    scroll:AddChild(grpLock)
+
+    -- Custom Centered Header
+    local headerLock = AceGUI:Create("Label")
+    headerLock:SetText("ACTIVE LOCKOUTS")
+    headerLock:SetFont(self.db.profile.font_title or "Fonts\\FRIZQT__.TTF", 14, "OUTLINE")
+    headerLock:SetColor(1, 0.82, 0)
+    headerLock:SetFullWidth(true)
+    headerLock:SetJustifyH("CENTER")
+    grpLock:AddChild(headerLock)
+    
+    local div2 = AceGUI:Create("Heading"); div2:SetFullWidth(true); div2:SetHeight(10); grpLock:AddChild(div2)
+
+    local numSaved = GetNumSavedInstances()
+    local hasLock = false
+    if numSaved > 0 then
+        for i = 1, numSaved do
+            local name, _, reset, _, locked, _, _, _, _, diffName = GetSavedInstanceInfo(i)
+            if locked then
+                hasLock = true
+                local txt = string.format("%s (%s) - Resets in: %dh %02dm", name, (diffName or "Normal"), math.floor(reset/3600), math.floor((reset%3600)/60))
+                
+                local lbl = AceGUI:Create("Label")
+                lbl:SetText(txt)
+                lbl:SetFullWidth(true)
+                lbl:SetJustifyH("CENTER")
+                lbl:SetColor(1, 0.8, 0)
+                grpLock:AddChild(lbl)
+            end
+        end
+    end
+    
+    if not hasLock then
+        local lbl = AceGUI:Create("Label"); lbl:SetText("No active lockouts."); lbl:SetColor(0.5, 0.5, 0.5); lbl:SetFullWidth(true); lbl:SetJustifyH("CENTER"); grpLock:AddChild(lbl)
+    end
+end
+
+
+
+function Stautist:DrawBossKillsView(container)
+    local AceGUI = LibStub("AceGUI-3.0")
+    
+    self.log_filters = self.log_filters or {
+        exp = "WotLK", type = "dungeon", zone = "All", boss = "All", size = "All"
+    }
+
+    -- HEADER
+    local header = AceGUI:Create("SimpleGroup")
+    header:SetLayout("Flow"); header:SetFullWidth(true)
+    container:AddChild(header)
+    
+    local btnBack = AceGUI:Create("Button")
+    btnBack:SetText("< Back")
+    btnBack:SetWidth(80)
+    btnBack:SetCallback("OnClick", function() 
+        container:ReleaseChildren()
+        self:DrawLogsContent(container) 
+    end)
+    ApplyFont(btnBack)
+    header:AddChild(btnBack)
+    
+    local title = AceGUI:Create("Label")
+    title:SetText("  FASTEST BOSS KILLS (Top 20)")
+    title:SetFont("Fonts\\FRIZQT__.TTF", 14, "OUTLINE")
+    title:SetColor(1, 0.8, 0)
+    title:SetWidth(250)
+    ApplyFont(title, 14)
+    header:AddChild(title)
+
+
+
+
+    -- FILTERS (Table Layout - Aggressive Minimums)
+    local filters = AceGUI:Create("SimpleGroup")
+    filters:SetLayout("Table")
+    filters:SetUserData("table", {
+        columns = {
+            {weight = 1, min = 125},   -- Expansion
+            {weight = 1, min = 115},   -- Type
+            {weight = 0.5, min = 70},  -- Size
+            {weight = 1.5, min = 200}, -- Zone (Widened)
+            {weight = 1.5, min = 200}, -- Boss (Widened)
+        },
+        space = 10,
+        align = "BOTTOM"
+    })
+    filters:SetFullWidth(true)
+    container:AddChild(filters)
+
+    -- 1. Expansion
+    local dropExp = AceGUI:Create("Dropdown")
+    dropExp:SetLabel("Expansion")
+    dropExp:SetList({["Classic"]="Classic", ["TBC"]="TBC", ["WotLK"]="WotLK"})
+    dropExp:SetValue(self.log_filters.exp)
+    dropExp:SetCallback("OnValueChanged", function(_,_,val) 
+        self.log_filters.exp = val; self.log_filters.zone = "All"; self.log_filters.boss = "All"
+        container:ReleaseChildren(); self:DrawBossKillsView(container)
+    end)
+    ApplyFont(dropExp)
+    filters:AddChild(dropExp)
+
+    -- 2. Type
+    local dropType = AceGUI:Create("Dropdown")
+    dropType:SetLabel("Type")
+    dropType:SetList({["dungeon"]="Dungeon", ["raid"]="Raid"})
+    dropType:SetValue(self.log_filters.type)
+    dropType:SetCallback("OnValueChanged", function(_,_,val)
+        self.log_filters.type = val; self.log_filters.zone = "All"; self.log_filters.boss = "All"
+        container:ReleaseChildren(); self:DrawBossKillsView(container)
+    end)
+    ApplyFont(dropType)
+    filters:AddChild(dropType)
+
+    -- 3. Size
+    local dropSize = AceGUI:Create("Dropdown")
+    dropSize:SetLabel("Size")
+    dropSize:SetList({ ["All"]="All", ["5"]="5", ["10"]="10", ["25"]="25", ["40"]="40" })
+    dropSize:SetValue(self.log_filters.size or "All")
+    dropSize:SetCallback("OnValueChanged", function(_, _, val)
+        self.log_filters.size = val; self.log_filters.zone = "All"; self.log_filters.boss = "All"
+        container:ReleaseChildren(); self:DrawBossKillsView(container)
+    end)
+    ApplyFont(dropSize)
+    filters:AddChild(dropSize)
+
+    -- 4. Zone
+    local zoneList = {}
+    for id, data in pairs(self.BossDB) do
+        if data.tier == self.log_filters.exp and data.type == self.log_filters.type then
+            zoneList[id] = data.name
+        end
+    end
+    
+    local dropZone = AceGUI:Create("Dropdown")
+    dropZone:SetLabel("Zone")
+    dropZone:SetList(zoneList)
+    
+    local validZone = false
+    if self.log_filters.zone ~= "All" and zoneList[self.log_filters.zone] then validZone = true end
+    if not validZone then
+        local k = next(zoneList); if k then self.log_filters.zone = k; self.log_filters.boss = "All" else self.log_filters.zone = "None" end
+    end
+    
+    dropZone:SetValue(self.log_filters.zone)
+    dropZone:SetCallback("OnValueChanged", function(_,_,val)
+        self.log_filters.zone = val; self.log_filters.boss = "All"
+        container:ReleaseChildren(); self:DrawBossKillsView(container)
+    end)
+    ApplyFont(dropZone)
+    filters:AddChild(dropZone)
+
+    -- 5. Boss
+    local bossList = {["All"] = "Select a Boss"}
+    if self.log_filters.zone ~= "None" and self.BossDB[self.log_filters.zone] then
+        local zData = self.BossDB[self.log_filters.zone]
+        for npcID, bData in pairs(zData.bosses) do
+            local bName = (type(bData) == "table") and bData.name or bData
+            bossList[npcID] = bName
+        end
+    end
+    
+    local dropBoss = AceGUI:Create("Dropdown")
+    dropBoss:SetLabel("Boss")
+    dropBoss:SetList(bossList)
+    dropBoss:SetValue(self.log_filters.boss)
+    dropBoss:SetCallback("OnValueChanged", function(_,_,val)
+        self.log_filters.boss = val
+        container:ReleaseChildren(); self:DrawBossKillsView(container)
+    end)
+    ApplyFont(dropBoss)
+    filters:AddChild(dropBoss)
+
+
+
+
+    
+
+    -- DATA LIST
+    local scroll = AceGUI:Create("ScrollFrame")
+    scroll:SetLayout("Flow"); scroll:SetFullWidth(true); scroll:SetHeight(380)
+    container:AddChild(scroll)
+
+    if self.log_filters.boss == "All" then
+        local lbl = AceGUI:Create("Label")
+        lbl:SetText("\n\nPlease select a specific Boss to view rankings.")
+        lbl:SetColor(0.5, 0.5, 0.5); lbl:SetFullWidth(true); lbl:SetJustifyH("CENTER")
+        ApplyFont(lbl)
+        scroll:AddChild(lbl)
+        return
+    end
+
+    -- PROCESS DATA (Same as before)
+    local bossID = self.log_filters.boss
+    local kills = {}
+    
+    if self.db.global.run_history then
+        for _, run in ipairs(self.db.global.run_history) do
+            local sizeMatch = (self.log_filters.size == "All") or (tostring(run.size or 0) == self.log_filters.size)
+            if sizeMatch and run.boss_kills then
+                local kData = run.boss_kills[bossID] or run.boss_kills[tostring(bossID)]
+                if kData and kData.duration then
+                    table.insert(kills, {
+                        duration = kData.duration, date = run.date, roster = run.roster,
+                        run_time = run.total_time, success = run.success, wipes = run.wipes, difficulty = run.difficulty
+                    })
+                end
+            end
+        end
+    end
+
+    table.sort(kills, function(a,b) return a.duration < b.duration end)
+
+    if #kills == 0 then
+        local lbl = AceGUI:Create("Label"); lbl:SetText("\nNo kills recorded for this boss."); lbl:SetJustifyH("CENTER"); lbl:SetFullWidth(true)
+        ApplyFont(lbl)
+        scroll:AddChild(lbl)
+    else
+        for i = 1, math.min(#kills, 20) do
+            local k = kills[i]
+            local grp = AceGUI:Create("SimpleGroup")
+            grp:SetLayout("Flow"); grp:SetFullWidth(true)
+            
+            local lblRank = AceGUI:Create("Label"); lblRank:SetText(i.."."); lblRank:SetWidth(30); lblRank:SetColor(1, 0.8, 0)
+            ApplyFont(lblRank)
+            grp:AddChild(lblRank)
+            
+            local lblTime = AceGUI:Create("Label"); lblTime:SetText(self:FormatTime(k.duration, true)); lblTime:SetWidth(80); lblTime:SetColor(0, 1, 0)
+            ApplyFont(lblTime)
+            grp:AddChild(lblTime)
+            
+            local lblInfo = AceGUI:Create("InteractiveLabel")
+            local diffShort = (k.difficulty == "Heroic") and " (HC)" or ""
+            lblInfo:SetText(k.date .. diffShort)
+            lblInfo:SetWidth(150)
+            ApplyFont(lblInfo)
+            
+            lblInfo:SetCallback("OnEnter", function(widget)
+                GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
+                GameTooltip:AddLine("Kill Details", 1, 1, 1)
+                GameTooltip:AddLine("Run Time: " .. self:FormatTime(k.run_time, true))
+                if not k.success then GameTooltip:AddLine("Run Status: Incomplete", 1, 0.2, 0.2) end
+                if k.roster then
+                    GameTooltip:AddLine(" "); GameTooltip:AddLine("Group Members:", 1, 0.8, 0)
+                    for _, p in ipairs(k.roster) do
+                        local c = RAID_CLASS_COLORS[(p.class or "PRIEST"):upper()] or {r=0.7,g=0.7,b=0.7}
+                        GameTooltip:AddLine(p.name, c.r, c.g, c.b)
+                    end
+                end
+                GameTooltip:Show()
+            end)
+            lblInfo:SetCallback("OnLeave", function() GameTooltip:Hide() end)
+            grp:AddChild(lblInfo)
+            scroll:AddChild(grp)
+        end
+    end
+end
+
+
+
+
+
+
+
+
+-- ============================================================================
+-- SETUP WIZARD
+-- ============================================================================
+function Stautist:RunSetupWizard()
+    if StautistSetupFrame then StautistSetupFrame:Show(); return end
+
+    local f = CreateFrame("Frame", "StautistSetupFrame", UIParent)
+    f:SetSize(400, 300)
+    f:SetPoint("CENTER")
+    f:SetFrameStrata("DIALOG")
+    f:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = false, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
+    })
+    f:SetBackdropColor(0, 0, 0, 0.95)
+    f:SetBackdropBorderColor(1, 0.2, 0.2, 1)
+
+    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+    title:SetPoint("TOP", 0, -20)
+    title:SetText("Stautist Setup")
+    title:SetTextColor(1, 0.2, 0.2)
+
+    local desc = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    desc:SetPoint("TOP", title, "BOTTOM", 0, -20)
+    desc:SetWidth(360)
+    desc:SetJustifyH("CENTER")
+    desc:SetFont("Fonts\\FRIZQT__.TTF", 12)
+
+    local container = CreateFrame("Frame", nil, f)
+    container:SetSize(360, 150)
+    container:SetPoint("TOP", desc, "BOTTOM", 0, -10)
+
+    local step = 1
+    local maxSteps = 6
+    
+    local btnNext = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    btnNext:SetSize(100, 25)
+    btnNext:SetPoint("BOTTOMRIGHT", -20, 20)
+    btnNext:SetText("Next")
+
+    local btnSkip = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    btnSkip:SetSize(100, 25)
+    btnSkip:SetPoint("BOTTOMLEFT", 20, 20)
+    btnSkip:SetText("Skip Setup")
+    btnSkip:SetScript("OnClick", function() 
+        f:Hide()
+        Stautist:StopFakeSimulation()
+    end)
+
+    local function ShowStep()
+        for _, child in ipairs({container:GetChildren()}) do child:Hide() end
+        
+        -- Start Simulation on Scale steps
+        if step == 2 or step == 3 then
+            Stautist:StartFakeSimulation()
+        else
+            Stautist:StopFakeSimulation()
+        end
+
+        if step == 1 then
+            desc:SetText("Welcome to Stautist!\n\nWould you take a moment to go through |cffff0000Stautist|r setup?")
+            btnNext:SetText("Start")
+            
+        elseif step == 2 then
+            desc:SetText("Step 1: HUD Scale\n(See preview on screen)")
+            
+            local s = CreateFrame("Slider", "StautistSetupHudScale", container, "OptionsSliderTemplate")
+            s:SetPoint("CENTER", 0, 10)
+            s:SetMinMaxValues(0.5, 2.0)
+            s:SetValue(Stautist.db.profile.timer_scale)
+            s:SetValueStep(0.1)
+            getglobal(s:GetName()..'Low'):SetText('0.5')
+            getglobal(s:GetName()..'High'):SetText('2.0')
+            getglobal(s:GetName()..'Text'):SetText(string.format('Scale: %.1f', Stautist.db.profile.timer_scale))
+            
+            -- FIX: Separate Logic
+            s:SetScript("OnValueChanged", function(selfS, value)
+                value = math.floor(value * 10 + 0.5) / 10
+                getglobal(selfS:GetName()..'Text'):SetText(string.format('Scale: %.1f', value))
+            end)
+            
+            s:SetScript("OnMouseUp", function(selfS)
+                local value = selfS:GetValue()
+                value = math.floor(value * 10 + 0.5) / 10
+                Stautist.db.profile.timer_scale = value
+                if Stautist.hudFrame then Stautist.hudFrame:SetScale(value) end
+            end)
+            s:Show()
+
+        elseif step == 3 then
+            desc:SetText("Step 2: Menu/Config Scale\n(Adjust this window size)")
+            
+            local s = CreateFrame("Slider", "StautistSetupMenuScale", container, "OptionsSliderTemplate")
+            s:SetPoint("CENTER", 0, 10)
+            s:SetMinMaxValues(0.5, 2.0)
+            s:SetValue(Stautist.db.profile.config_scale)
+            s:SetValueStep(0.1)
+            getglobal(s:GetName()..'Low'):SetText('0.5')
+            getglobal(s:GetName()..'High'):SetText('2.0')
+            getglobal(s:GetName()..'Text'):SetText(string.format('Scale: %.1f', Stautist.db.profile.config_scale))
+            
+            s:SetScript("OnValueChanged", function(selfS, value)
+                value = math.floor(value * 10 + 0.5) / 10
+                getglobal(selfS:GetName()..'Text'):SetText(string.format('Scale: %.1f', value))
+            end)
+            
+            s:SetScript("OnMouseUp", function(selfS)
+                local value = selfS:GetValue()
+                value = math.floor(value * 10 + 0.5) / 10
+                Stautist.db.profile.config_scale = value
+                if Stautist.ConfigFrame then Stautist.ConfigFrame:SetScale(value) end
+                f:SetScale(value) 
+            end)
+            s:Show()
+
+        elseif step == 4 then
+            desc:SetText("Step 3: HUD Visibility Behavior")
+            
+            local function ResetButtons(btns)
+                for _, b in ipairs(btns) do 
+                    b:GetFontString():SetTextColor(1, 0.82, 0) -- Default Gold
+                    b:Enable()
+                end
+            end
+            
+            local b1 = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
+            local b2 = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
+            local b3 = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
+            local btns = {b1, b2, b3}
+
+            local function SetSelected(btn, val)
+                ResetButtons(btns)
+                Stautist.db.profile.hud_behavior = val
+                btn:GetFontString():SetTextColor(0, 1, 0) -- Green when selected
+                Stautist:Print("HUD Behavior set to: " .. val)
+            end
+
+            b1:SetSize(100, 25); b1:SetPoint("LEFT", 10, 0); b1:SetText("Always Show")
+            b1:SetScript("OnClick", function() SetSelected(b1, "Show") end)
+            
+            b2:SetSize(100, 25); b2:SetPoint("CENTER", 0, 0); b2:SetText("Ask on Enter")
+            b2:SetScript("OnClick", function() SetSelected(b2, "Ask") end)
+
+            b3:SetSize(100, 25); b3:SetPoint("RIGHT", -10, 0); b3:SetText("Always Hide")
+            b3:SetScript("OnClick", function() SetSelected(b3, "Hide") end)
+            
+            -- Highlight current setting
+            local cur = Stautist.db.profile.hud_behavior
+            if cur == "Show" then SetSelected(b1, "Show")
+            elseif cur == "Ask" then SetSelected(b2, "Ask")
+            elseif cur == "Hide" then SetSelected(b3, "Hide") end
+            
+            b1:Show(); b2:Show(); b3:Show()
+        
+        elseif step == 5 then
+            desc:SetText("Step 4: Announcements & Automation")
+            
+            local function CreateCheck(name, var, y)
+                local c = CreateFrame("CheckButton", name, container, "UICheckButtonTemplate")
+                c:SetPoint("TOPLEFT", 40, y)
+                getglobal(c:GetName().."Text"):SetText(var)
+                return c
+            end
+
+            local c1 = CreateCheck("StautistSetupC1", "Announce Resets", 0)
+            c1:SetChecked(Stautist.db.profile.announce_resets)
+            c1:SetScript("OnClick", function(s) Stautist.db.profile.announce_resets = s:GetChecked() end)
+            c1:Show()
+
+            local c2 = CreateCheck("StautistSetupC2", "Announce 5/Hour Limit", -30)
+            c2:SetChecked(Stautist.db.profile.announce_lockouts)
+            c2:SetScript("OnClick", function(s) Stautist.db.profile.announce_lockouts = s:GetChecked() end)
+            c2:Show()
+
+            local c3 = CreateCheck("StautistSetupC3", "Announce Run Completion", -60)
+            c3:SetChecked(Stautist.db.profile.announce_completion)
+            c3:SetScript("OnClick", function(s) Stautist.db.profile.announce_completion = s:GetChecked() end)
+            c3:Show()
+
+            local c4 = CreateCheck("StautistSetupC4", "Announce Fastest Kills (PB)", -90)
+            c4:SetChecked(Stautist.db.profile.announce_fastest_kill)
+            c4:SetScript("OnClick", function(s) Stautist.db.profile.announce_fastest_kill = s:GetChecked() end)
+            c4:Show()
+            
+        elseif step == 6 then
+            desc:SetText("Setup Complete!\n\nType /stau to open settings anytime.")
+            btnNext:SetText("Finish")
+        end
+    end
+
+    btnNext:SetScript("OnClick", function()
+        step = step + 1
+        if step > maxSteps then
+            f:Hide()
+            Stautist:StopFakeSimulation()
+        else
+            ShowStep()
+        end
+    end)
+
+    ShowStep()
+end
+
+
+-- ============================================================================
+-- FULL LEDGER
+-- ============================================================================
+
+function Stautist:GetTimestampFromDate(dateStr)
+    if not dateStr then return 0 end
+    local d, m, y, H, M = dateStr:match("(%d+)/(%d+)/(%d+) (%d+):(%d+)")
+    if d and m and y then
+        -- Assume 20xx for year
+        return time({year=2000+tonumber(y), month=tonumber(m), day=tonumber(d), hour=tonumber(H), min=tonumber(M)})
+    end
+    return 0
+end
+
+function Stautist:OpenFullLedgerWindow()
+    local AceGUI = LibStub("AceGUI-3.0")
+    
+    -- Create Frame
+    local f = AceGUI:Create("Frame")
+    f:SetTitle("Stautist - Full Run Ledger")
+    f:SetLayout("Flow")
+    f:SetWidth(650)
+    f:SetHeight(550)
+    f:SetCallback("OnClose", function(widget) AceGUI:Release(widget) end)
+
+    -- 1. CALCULATE STATS
+    local now = time()
+    local stats = {
+        dungeon = { today=0, week=0, month=0, total=0 },
+        raid = { today=0, week=0, month=0, total=0 }
+    }
+    
+    local history = self.db.global.run_history or {}
+    
+    -- Sort by date descending (Newest first)
+    table.sort(history, function(a,b)
+        local tA = a.timestamp or self:GetTimestampFromDate(a.date)
+        local tB = b.timestamp or self:GetTimestampFromDate(b.date)
+        return tA > tB
+    end)
+
+    for _, run in ipairs(history) do
+        local ts = run.timestamp or self:GetTimestampFromDate(run.date)
+        local diff = now - ts
+        
+        -- Determine Type
+        local rType = "dungeon"
+        if run.zone_id and self.BossDB[run.zone_id] then
+            rType = self.BossDB[run.zone_id].type or "dungeon"
+        end
+        
+        if stats[rType] then
+            stats[rType].total = stats[rType].total + 1
+            
+            -- Today (24h rolling or calendar? Using 24h rolling for simplicity)
+            if diff < 86400 then stats[rType].today = stats[rType].today + 1 end
+            -- Week (7 days rolling)
+            if diff < 604800 then stats[rType].week = stats[rType].week + 1 end
+            -- Month (30 days rolling)
+            if diff < 2592000 then stats[rType].month = stats[rType].month + 1 end
+        end
+    end
+
+    -- 2. DRAW STATS HEADER
+    local grpStats = AceGUI:Create("InlineGroup")
+    grpStats:SetTitle("Statistics")
+    grpStats:SetLayout("Flow")
+    grpStats:SetFullWidth(true)
+    f:AddChild(grpStats)
+
+    local function CreateStatColumn(title, data)
+        local g = AceGUI:Create("SimpleGroup")
+        g:SetLayout("List")
+        g:SetRelativeWidth(0.45) 
+        
+        local lTitle = AceGUI:Create("Label")
+        lTitle:SetText(title)
+        
+        -- FIX: Use FONT_MAIN (PTSans) explicitly
+        lTitle:SetFont(FONT_MAIN, 16, "OUTLINE") 
+        
+        lTitle:SetColor(1, 0.8, 0)
+        lTitle:SetJustifyH("CENTER")
+        lTitle:SetFullWidth(true)
+        g:AddChild(lTitle)
+        
+        -- SPACER
+        local sp = AceGUI:Create("Label"); sp:SetText(" "); sp:SetHeight(10); g:AddChild(sp)
+        
+        local function AddStat(txt, color)
+            local l = AceGUI:Create("Label")
+            l:SetText(txt)
+            l:SetFullWidth(true)
+            l:SetJustifyH("CENTER")
+            if color then l:SetColor(unpack(color)) end
+            
+            -- FIX: Apply PTSans to stats
+            l:SetFont(FONT_MAIN, 12)
+            
+            g:AddChild(l)
+        end
+
+        AddStat("Today: " .. data.today)
+        AddStat("This Week: " .. data.week)
+        AddStat("This Month: " .. data.month)
+        AddStat("Total Tracked: " .. data.total, {0.6, 0.6, 0.6})
+        
+        return g
+    end
+
+    -- Spacer Left
+    local spL = AceGUI:Create("Label"); spL:SetText(" "); spL:SetRelativeWidth(0.05); grpStats:AddChild(spL)
+    
+    grpStats:AddChild(CreateStatColumn("DUNGEONS", stats.dungeon))
+    grpStats:AddChild(CreateStatColumn("RAIDS", stats.raid))
+
+    -- 3. DRAW SCROLLABLE LIST
+    local scroll = AceGUI:Create("ScrollFrame")
+    scroll:SetLayout("Flow")
+    scroll:SetFullWidth(true)
+    scroll:SetHeight(380)
+    f:AddChild(scroll)
+
+    for i, run in ipairs(history) do
+        local grp = AceGUI:Create("SimpleGroup")
+        grp:SetLayout("Flow")
+        grp:SetFullWidth(true)
+        
+        -- Background for alternate rows
+        if i % 2 == 0 then
+            local bg = AceGUI:Create("Heading")
+            bg:SetFullWidth(true); bg:SetHeight(0) -- Hacky separator
+            -- AceGUI SimpleGroup doesn't support BG easily without custom frame, 
+            -- so we stick to clean text or simple spacers.
+        end
+
+        local zName = "Unknown"
+        if run.zone_id and self.BossDB[run.zone_id] then zName = self.BossDB[run.zone_id].name end
+        if run.partial then zName = zName .. " (Partial)" end
+        
+        -- Format: [Date] Zone (Diff) - Time [Success/Fail]
+        local dateColor = "|cffaaaaaa"
+        local zoneColor = "|cffffffff"
+        local timeColor = "|cff00ff00"
+        
+        if not run.success then timeColor = "|cffff0000" end -- Red time if failed
+        
+        local line = string.format("%s%s|r  %s%s (%s)|r  -  %s%s|r", 
+            dateColor, run.date, 
+            zoneColor, zName, run.difficulty,
+            timeColor, self:FormatTime(run.total_time)
+        )
+        
+        local lbl = AceGUI:Create("InteractiveLabel")
+        lbl:SetText(line)
+        lbl:SetFullWidth(true)
+        lbl:SetFont(self.FONT or "Fonts\\ARIALN.TTF", 12)
+        
+        -- Tooltip for details
+        lbl:SetCallback("OnEnter", function(widget)
+            GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
+            GameTooltip:AddLine(zName, 1, 1, 1)
+            GameTooltip:AddLine("Date: " .. run.date)
+            GameTooltip:AddLine("Time: " .. self:FormatTime(run.total_time))
+            GameTooltip:AddLine("Wipes: " .. (run.wipes or 0))
+            if run.roster then
+                GameTooltip:AddLine(" ")
+                GameTooltip:AddLine("Group Members:", 1, 0.8, 0)
+                for _, p in ipairs(run.roster) do
+                    local c = RAID_CLASS_COLORS[p.class:upper()] or {r=0.7,g=0.7,b=0.7}
+                    GameTooltip:AddLine(p.name, c.r, c.g, c.b)
+                end
+            end
+            GameTooltip:Show()
+        end)
+        lbl:SetCallback("OnLeave", function() GameTooltip:Hide() end)
+        
+        grp:AddChild(lbl)
+        scroll:AddChild(grp)
+    end
+end
+
+function Stautist:DrawPlaceholderContent(container, text)
+    local AceGUI = LibStub("AceGUI-3.0")
+    
+    -- Use Fill layout to force children to fill the space
+    container:SetLayout("Fill") 
+    
+    -- Create a wrapper group for alignment if needed, or just add the label directly
+    -- Adding directly to a Fill container is the most reliable way to center a label
+    
+    local lbl = AceGUI:Create("Label")
+    lbl:SetText("\n\n" .. (text or "soon. i think. maybe. we'll see"))
+    
+    -- Apply Font
+    lbl:SetFont(FONT_MAIN, 24, "OUTLINE") 
+    
+    lbl:SetColor(0.5, 0.5, 0.5)
+    lbl:SetJustifyH("CENTER") -- Center Horizontally
+    lbl:SetJustifyV("MIDDLE") -- Try vertical center (some AceGUI versions support this on Label)
+    
+    container:AddChild(lbl)
+end
