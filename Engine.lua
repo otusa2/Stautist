@@ -125,10 +125,27 @@ function Stautist:OnZoneChange()
     local state = self.db.char.active_run_state
     if not state or not state.is_running then return end
     
+    -- Grace period for active runs
     if state.start_time and (GetTime() - state.start_time) < 5 then return end
 
     local currentZone = GetRealZoneText()
-    if state.zone_name and currentZone and currentZone ~= "" and not string.find(currentZone, state.zone_name, 1, true) then
+    local zoneMismatch = (state.zone_name and currentZone and currentZone ~= "" and not string.find(currentZone, state.zone_name, 1, true))
+
+    if zoneMismatch then
+        -- CASE A: Run hasn't started yet (0:00). 
+        -- We wait 4 seconds to filter out LFG loading lag. If still outside, we Auto-Stop.
+        if state.waiting_for_combat then
+            self:ScheduleTimer(function()
+                 local z = GetRealZoneText()
+                 -- If still outside and still waiting
+                 if self.db.char.active_run_state.is_running and self.db.char.active_run_state.waiting_for_combat and z and not string.find(z, state.zone_name, 1, true) then
+                     self:StopRun(false, "Left Instance")
+                 end
+            end, 4)
+            return
+        end
+
+        -- CASE B: Run is Active. Show Popup.
         self:ShowHUD()
         self:ScheduleTimer(function() 
             local newZone = GetRealZoneText()
@@ -145,26 +162,31 @@ function Stautist:CheckCombatDrop()
     local state = self.db.char.active_run_state
     if not state.is_running then return end
 
-    -- Wipe Detection Logic
     if state.combat_boss_id then
         local groupSize = self:GetGroupSize()
         local deaths = state.combat_deaths or 0
         
-        if self:IsGroupWiped() or (deaths > 0 and deaths >= (groupSize - 1)) then
+        -- [FIX] Strict Wipe Detection
+        -- We only reset the boss timer if the WHOLE group is dead/ghost.
+        -- Previously, this reset whenever the PLAYER dropped combat (Death, BRes, MC), 
+        -- which broke timers for Battle Res and mechanics like Blackheart.
+        
+        local isWipe = self:IsGroupWiped()
+        local almostWiped = (deaths > 0 and deaths >= (groupSize - 1))
+
+        if isWipe or almostWiped then
             state.wipes = (state.wipes or 0) + 1
             self:Print("|cffff0000WIPE DETECTED!|r (Count: " .. state.wipes .. ")")
             if self.UpdateHUDWipes then self:UpdateHUDWipes(state.wipes) end 
+            
+            -- RESET TIMER ONLY ON ACTUAL WIPE
+            state.current_fight_start = nil
+            state.combat_boss_id = nil
+            state.combat_deaths = 0
         end
         
-        -- AGGRESSIVE RESET: 
-        -- If we dropped combat, and this function runs, it means the player is Regen Enabled (out of combat).
-        -- If the boss was actually killed, OnBossKill would have already cleared 'combat_boss_id'.
-        -- Therefore, if 'combat_boss_id' is still set here, it means the boss is ALIVE and we are OUT OF COMBAT.
-        -- We must reset the timer immediately.
-        
-        state.current_fight_start = nil
-        state.combat_boss_id = nil
-        state.combat_deaths = 0
+        -- If player drops combat (Dead, MC, Vanish) but group is fighting, 
+        -- we do NOTHING. The timer keeps ticking.
     end
 end
 
@@ -237,7 +259,7 @@ function Stautist:StopRun(isComplete, reason)
 
         if self.db.profile.announce_completion then
             local rankText = isPB and " (New PB!)" or (" (Rank " .. rank .. ")")
-            local msg = string.format("<Stautist> %s cleared in %s!%s Wipes: %d", zoneName, self:FormatTime(finalTime), rankText, runData.wipes)
+            local msg = string.format("Stautist: %s - %s%s (Wipes: %d)", zoneName, self:FormatTime(finalTime), rankText, runData.wipes)
             local channel = (GetNumRaidMembers() > 0) and "RAID" or (GetNumPartyMembers() > 0) and "PARTY" or "PRINT"
             if channel == "PRINT" then self:Print(msg) else SendChatMessage(msg, channel) end
         end
@@ -388,8 +410,8 @@ function Stautist:OnEnterInstance()
                 local m = math.floor(timeLeft / 60)
                 local timeStr = string.format("%d min", m)
                 local msg = ""
-                if count == 4 then msg = string.format("<Stautist> Warning: 4/5 instances entered! Next slot opens in %s.", timeStr)
-                elseif count >= 5 then msg = string.format("<Stautist> CRITICAL: 5/5 instances entered (LOCKED). Next slot opens in %s.", timeStr) end
+                if count == 4 then msg = string.format("Warning: 4/5 instances entered! Next slot opens in %s.", timeStr)
+                elseif count >= 5 then msg = string.format("CRITICAL: 5/5 instances entered (LOCKED). Next slot opens in %s.", timeStr) end
                 
                 if GetNumRaidMembers() > 0 then SendChatMessage(msg, "RAID")
                 elseif GetNumPartyMembers() > 0 then SendChatMessage(msg, "PARTY")
@@ -419,9 +441,24 @@ function Stautist:CheckZoneStatus()
     -- 2. Outside Logic
     if instanceType ~= "party" and instanceType ~= "raid" then
         if state.is_running then
-            -- Only hide if we actually left the instance area
             local currentZone = GetRealZoneText()
-            if state.zone_name and currentZone and not string.find(currentZone, state.zone_name, 1, true) then
+            local zoneMismatch = (state.zone_name and currentZone and not string.find(currentZone, state.zone_name, 1, true))
+
+            if zoneMismatch then
+                 -- CASE A: Waiting for Combat (0:00). Auto-Stop after buffer.
+                 if state.waiting_for_combat then
+                     self:ScheduleTimer(function()
+                         local z = GetRealZoneText()
+                         local _, typeCheck = GetInstanceInfo()
+                         -- Double check we are still outside and still waiting
+                         if self.db.char.active_run_state.is_running and self.db.char.active_run_state.waiting_for_combat and (typeCheck ~= "party" and typeCheck ~= "raid") and (z ~= state.zone_name) then
+                             self:StopRun(false, "Left Instance")
+                         end
+                     end, 4)
+                     return
+                 end
+
+                 -- CASE B: Active Run. Popup.
                  if not state.user_hidden_hud then self:ShowHUD() end
                  self:ScheduleTimer(function()
                      local z = GetRealZoneText()
@@ -439,7 +476,6 @@ function Stautist:CheckZoneStatus()
         end
         return
     end
-
     -- 3. ID Matching
     local dbID = nil
     
@@ -927,7 +963,7 @@ function Stautist:CheckFastestKill(npcID, duration, name, difficulty)
         -- Assuming we only want to compare against previous data:
         if hasHistory and bestDuration ~= 99999 then
              -- Added 'true' to FormatTime for precision
-             msg = string.format("NEW RECORD! %s killed in %s (-%s)", name, self:FormatTime(duration, true), self:FormatTime(diff, true))
+             msg = string.format("PB! %s: %s (-%s)", name, self:FormatTime(duration, true), self:FormatTime(diff, true))
              
              local channel = (GetNumRaidMembers() > 0) and "RAID" or (GetNumPartyMembers() > 0) and "PARTY" or "PRINT"
              if channel == "PRINT" then self:Print(msg) else SendChatMessage("<Stautist> " .. msg, channel) end

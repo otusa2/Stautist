@@ -83,6 +83,36 @@ end
 -- 2. STATIC POPUPS (Confirmations)
 -- ============================================================================
 
+StaticPopupDialogs["STAUTIST_EDIT_NOTE"] = {
+    text = "Edit Note for %s:",
+    button1 = "Save",
+    button2 = "Cancel",
+    hasEditBox = true,
+    maxLetters = 200,
+    OnShow = function(self)
+        -- Failsafe check for data
+        local currentNote = (self.data and self.data.note) or ""
+        self.editBox:SetText(currentNote)
+        self.editBox:SetFocus()
+    end,
+    OnAccept = function(self)
+        local text = self.editBox:GetText()
+        if self.data and self.data.target then
+            self.data.target.note = text 
+            if self.data.callback then self.data.callback() end
+            Stautist:Print("Note saved.")
+        end
+    end,
+    EditBoxOnEnterPressed = function(self)
+        local parent = self:GetParent()
+        StaticPopupDialogs["STAUTIST_EDIT_NOTE"].OnAccept(parent)
+        parent:Hide()
+    end,
+    timeout = 0, whileDead = true, hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+
 StaticPopupDialogs["STAUTIST_RESET_1"] = {
     text = "This will clean ALL your data (Runs, History, Logs).\nThere is no coming back.",
     button1 = "Continue",
@@ -204,6 +234,7 @@ function Stautist:OnInitialize()
         global = {
             db_version = DB_VERSION,
             social_ledger = {}, 
+            social_notes = {}, -- Persistent Player Notes
             run_history = {},
             gold_log = {},
             -- instance_log removed from global
@@ -543,6 +574,8 @@ function Stautist:OpenConfigWindow()
     f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", f.StartMoving)
     f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    f:SetScript("OnHide", function() Stautist:StopFakeSimulation() end)
+
 
     f:SetBackdrop({
         bgFile = "Interface\\Buttons\\WHITE8X8",
@@ -561,7 +594,7 @@ function Stautist:OpenConfigWindow()
     
     f.verText = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     f.verText:SetPoint("TOP", f.logo, "BOTTOM", 0, -5)
-    f.verText:SetText("v0.1")
+    f.verText:SetText("v0.2")
     f.verText:SetTextColor(unpack(C_RED))
     f.verText:SetFont(FONT_MAIN, 10, "OUTLINE")
 
@@ -726,6 +759,11 @@ function Stautist:DrawGeneralContent(container)
         local val = widget:GetValue(); val = math.floor(val * 10 + 0.5) / 10 
         self.db.profile.timer_scale = val
         if self.hudFrame then self.hudFrame:SetScale(val) end
+        
+        -- Trigger Test Mode if not running
+        if not self.db.char.active_run_state.is_running then
+            self:StartFakeSimulation()
+        end
     end)
     ApplyFont(sldHud)
     row1:AddChild(sldHud)
@@ -738,6 +776,11 @@ function Stautist:DrawGeneralContent(container)
     sldWidth:SetCallback("OnMouseUp", function(widget)
         self.db.profile.hud_width = widget:GetValue()
         if self.UpdateHUDLayout then self:UpdateHUDLayout() end
+        
+        -- Trigger Test Mode
+        if not self.db.char.active_run_state.is_running then
+            self:StartFakeSimulation()
+        end
     end)
     ApplyFont(sldWidth)
     row1:AddChild(sldWidth)
@@ -1196,7 +1239,11 @@ function Stautist:CreateLeaderboardRow(container, rank, run)
                 GameTooltip:AddDoubleLine(bName, string.format("|cffffffff%s|r (|cff00ff00%s|r)", sTime, kTime))
             end
         end
-        
+        -- NOTE DISPLAY
+        if run.note and run.note ~= "" then
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddLine("Note: " .. run.note, 1, 0.82, 0, true) -- Wrap text
+        end
         GameTooltip:Show()
     end
     local function HideTooltip() GameTooltip:Hide() end
@@ -1236,7 +1283,7 @@ function Stautist:CreateLeaderboardRow(container, rank, run)
 
     -- 5. ROSTER ICONS (UPDATED WITH LEVELS)
     local iconContainer = AceGUI:Create("SimpleGroup")
-    iconContainer:SetWidth(270)
+    iconContainer:SetWidth(250)
     iconContainer:SetLayout("Flow")
     grp:AddChild(iconContainer)
 
@@ -1304,11 +1351,31 @@ function Stautist:CreateLeaderboardRow(container, rank, run)
     -- 6. DATE (Interactive)
     local lblDate = AceGUI:Create("InteractiveLabel")
     lblDate:SetText(run.date or "N/A")
-    lblDate:SetWidth(120)
+    lblDate:SetWidth(100)
     lblDate:SetColor(0.6, 0.6, 0.6)
     lblDate:SetCallback("OnEnter", ShowTooltip)
     lblDate:SetCallback("OnLeave", HideTooltip)
     grp:AddChild(lblDate)
+
+    -- 6.5 NOTE BUTTON
+    local btnNote = AceGUI:Create("Icon")
+    btnNote:SetImage("Interface\\Buttons\\UI-GuildButton-PublicNote-Up")
+    btnNote:SetImageSize(16, 16)
+    btnNote:SetWidth(20)
+    btnNote:SetCallback("OnClick", function()
+        local data = { target = run, note = run.note, callback = function() self:RefreshLeaderboard() end }
+        -- OLD: StaticPopup_Show("STAUTIST_EDIT_NOTE", "Run #"..rank, data)
+        -- NEW: Pass nil as 3rd arg
+        StaticPopup_Show("STAUTIST_EDIT_NOTE", "Run #"..rank, nil, data)
+    end)
+    btnNote:SetCallback("OnEnter", function(widget)
+        GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
+        GameTooltip:AddLine("Edit Note", 1, 1, 1)
+        if run.note then GameTooltip:AddLine(run.note, 1, 0.8, 0, true) end
+        GameTooltip:Show()
+    end)
+    btnNote:SetCallback("OnLeave", HideTooltip)
+    grp:AddChild(btnNote)
 
     -- 7. DELETE BUTTON
     local btnDel = AceGUI:Create("Icon")
@@ -1444,6 +1511,13 @@ function Stautist:RefreshSocialList(container, filter)
             lbl:SetCallback("OnEnter", function(widget)
                 GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
                 GameTooltip:AddLine(pData.name, color.r, color.g, color.b)
+                
+                -- [NEW] Display Note if exists
+                local note = self.db.global.social_notes[pData.name]
+                if note and note ~= "" then
+                    GameTooltip:AddLine("Note: " .. note, 1, 0.82, 0, true) -- Gold color, wrapping enabled
+                end
+
                 GameTooltip:AddLine("Total Runs: " .. pData.runs, 1, 1, 1)
                 
                 -- Mini History
@@ -1480,6 +1554,36 @@ function Stautist:ShowPlayerDetails(pData)
     
     local scroll = AceGUI:Create("ScrollFrame")
     scroll:SetLayout("Flow"); scroll:SetFullWidth(true); scroll:SetHeight(420)
+    -- PLAYER NOTE EDITOR
+    local noteGrp = AceGUI:Create("SimpleGroup")
+    noteGrp:SetLayout("Flow"); noteGrp:SetFullWidth(true)
+    
+    local editNote = AceGUI:Create("MultiLineEditBox")
+    editNote:SetLabel("Player Note")
+    editNote:SetNumLines(3)
+    editNote:SetFullWidth(true)
+    
+    -- Load existing note
+    local existingNote = self.db.global.social_notes[pData.name] or ""
+    editNote:SetText(existingNote)
+    
+    -- Save on Enter/Loss of Focus
+    local function SaveNote(widget)
+        local txt = widget:GetText()
+        if txt and txt ~= "" then
+            self.db.global.social_notes[pData.name] = txt
+        else
+            self.db.global.social_notes[pData.name] = nil
+        end
+    end
+    
+    editNote:SetCallback("OnEnterPressed", SaveNote)
+    editNote:SetCallback("OnLeave", SaveNote)
+    
+    noteGrp:AddChild(editNote)
+    f:AddChild(noteGrp)
+    
+    local div = AceGUI:Create("Heading"); div:SetFullWidth(true); div:SetHeight(10); f:AddChild(div)
     f:AddChild(scroll)
 
     -- Sort history: Newest first
@@ -1892,7 +1996,8 @@ function Stautist:DrawBossKillsView(container)
                 if kData and kData.duration then
                     table.insert(kills, {
                         duration = kData.duration, date = run.date, roster = run.roster,
-                        run_time = run.total_time, success = run.success, wipes = run.wipes, difficulty = run.difficulty
+                        run_time = run.total_time, success = run.success, wipes = run.wipes, 
+                        difficulty = run.difficulty, run_ref = run -- << ADD THIS
                     })
                 end
             end
@@ -1928,9 +2033,11 @@ function Stautist:DrawBossKillsView(container)
             
             lblInfo:SetCallback("OnEnter", function(widget)
                 GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
-                GameTooltip:AddLine("Kill Details", 1, 1, 1)
+                GameTooltip:AddLine("Kill Details (Click to Edit Note)", 1, 1, 1) -- Updated Title
                 GameTooltip:AddLine("Run Time: " .. self:FormatTime(k.run_time, true))
-                if not k.success then GameTooltip:AddLine("Run Status: Incomplete", 1, 0.2, 0.2) end
+                if k.run_ref.note then
+                    GameTooltip:AddLine("Note: " .. k.run_ref.note, 1, 0.8, 0, true)
+                end
                 if k.roster then
                     GameTooltip:AddLine(" "); GameTooltip:AddLine("Group Members:", 1, 0.8, 0)
                     for _, p in ipairs(k.roster) do
@@ -1940,7 +2047,12 @@ function Stautist:DrawBossKillsView(container)
                 end
                 GameTooltip:Show()
             end)
-            lblInfo:SetCallback("OnLeave", function() GameTooltip:Hide() end)
+            lblInfo:SetCallback("OnClick", function()
+                local data = { target = k.run_ref, note = k.run_ref.note }
+                -- OLD: StaticPopup_Show("STAUTIST_EDIT_NOTE", "this Run", data)
+                -- NEW: Pass nil as 3rd arg
+                StaticPopup_Show("STAUTIST_EDIT_NOTE", "this Run", nil, data)
+            end)
             grp:AddChild(lblInfo)
             scroll:AddChild(grp)
         end
