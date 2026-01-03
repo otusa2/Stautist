@@ -353,6 +353,22 @@ function Stautist:OnChatCommand(input)
         end
     elseif cmd == "id" then
         self:GetTargetID()
+    elseif cmd == "zone" then
+        local name, type, diff, diffName, maxPlayers = GetInstanceInfo()
+        local real = GetRealZoneText()
+        local sub = GetSubZoneText()
+        
+        self:Print("|cffffd700[Zone Debug Info]|r")
+        self:Print("InstanceInfo Name: " .. (name or "nil"))
+        self:Print("RealZoneText: " .. (real or "nil"))
+        self:Print("SubZoneText: " .. (sub or "nil"))
+        self:Print("Type: " .. (type or "nil"))
+        
+        local id = self.currentZoneID or "N/A"
+        if id == "N/A" and self.db.char.active_run_state.zone_id then
+            id = self.db.char.active_run_state.zone_id .. " (Saved)"
+        end
+        self:Print("Stautist Locked ID: " .. id)
     elseif cmd == "debug" then
             local zoneID = tonumber(arg) or 389 
             self:Print("|cffffff00[Debug Mode]|r Forcing run start for Zone ID: " .. zoneID)

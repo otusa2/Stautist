@@ -442,16 +442,43 @@ function Stautist:CheckZoneStatus()
 
     -- 3. ID Matching
     local dbID = nil
+    
+    -- A. Check Saved Run State (Resuming)
     if state.is_running and state.zone_id then
         local currentZone = GetRealZoneText()
         if (zoneName == state.zone_name) or (currentZone and state.zone_name and string.find(currentZone, state.zone_name, 1, true)) then
             dbID = state.zone_id
         end
     end
+
+    -- B. Check Aliases (Exact Match Priority)
+    -- This fixes CoT/Magisters if server uses alternate names
+    if not dbID and self.ZoneAliases then
+        if self.ZoneAliases[zoneName] then dbID = self.ZoneAliases[zoneName] end
+        if not dbID then
+            local realZ = GetRealZoneText()
+            if realZ and self.ZoneAliases[realZ] then dbID = self.ZoneAliases[realZ] end
+        end
+    end
+
+    -- C. Standard DB Name Match (zoneName)
     if not dbID and self.BossDB then
         for id, data in pairs(self.BossDB) do
             if data.name and zoneName and string.find(zoneName, data.name, 1, true) then
                 dbID = id; break
+            end
+        end
+    end
+    
+    -- D. Failsafe DB Match (GetRealZoneText)
+    -- This fixes CoT where zoneName is "Caverns of Time" but RealZone is "Old Hillsbrad Foothills"
+    if not dbID and self.BossDB then
+        local realZ = GetRealZoneText()
+        if realZ and realZ ~= zoneName then
+            for id, data in pairs(self.BossDB) do
+                if data.name and string.find(realZ, data.name, 1, true) then
+                    dbID = id; break
+                end
             end
         end
     end
@@ -474,9 +501,16 @@ function Stautist:CheckZoneStatus()
 
         state.is_running = true
         state.zone_id = dbID
-        state.zone_name = zoneName
+        
+        -- FORCE DB NAME (Fixes HUD Title for CoT instances)
+        if self.BossDB[dbID] and self.BossDB[dbID].name then
+            state.zone_name = self.BossDB[dbID].name
+        else
+            state.zone_name = zoneName
+        end
+
         -- NEW: Do NOT set start_time yet.
-        state.start_time = nil 
+        state.start_time = nil
         state.waiting_for_combat = true -- Flag to indicate we are waiting
         
         state.boss_kills = {} 

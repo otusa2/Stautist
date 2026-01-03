@@ -190,8 +190,8 @@ Stautist.BossDB[555] = { name = "Shadow Labyrinth", type = "dungeon", tier="TBC"
 Stautist.BossDB[556] = { name = "Sethekk Halls", type = "dungeon", tier="TBC", textureID = 556, end_boss_id = 18473, bosses = { [18472]="Darkweaver Syth", [18473]="Talon King Ikiss", [23035]="Anzu" } }
 Stautist.BossDB[557] = { name = "Mana-Tombs", type = "dungeon", tier="TBC", textureID = 557, end_boss_id = 18344, bosses = { [18341]="Pandemonius", [18343]="Tavarok", [18344]="Nexus-Prince Shaffar" } }
 Stautist.BossDB[558] = { name = "Auchenai Crypts", type = "dungeon", tier="TBC", textureID = 558, end_boss_id = 18373, bosses = { [18371]="Shirrak the Dead Watcher", [18373]="Exarch Maladaar" } }
-Stautist.BossDB[560] = { name = "Old Hillsbrad", type = "dungeon", tier="TBC", textureID = 560, end_boss_id = 18096, bosses = { [17848]="Lieutenant Drake", [17862]="Captain Skarloc", [18096]="Epoch Hunter" } }
-Stautist.BossDB[269] = { name = "Black Morass", type = "dungeon", tier="TBC", textureID = 269, end_boss_id = 17881, bosses = { [17879]="Chrono Lord Deja", [17880]="Temporus", [17881]="Aeonus" } }
+Stautist.BossDB[560] = { name = "Old Hillsbrad Foothills", type = "dungeon", tier="TBC", textureID = 560, end_boss_id = 18096, bosses = { [17848]="Lieutenant Drake", [17862]="Captain Skarloc", [18096]="Epoch Hunter" } }
+Stautist.BossDB[269] = { name = "The Black Morass", type = "dungeon", tier="TBC", textureID = 269, end_boss_id = 17881, bosses = { [17879]="Chrono Lord Deja", [17880]="Temporus", [17881]="Aeonus" } }
 Stautist.BossDB[545] = { name = "Steamvault", type = "dungeon", tier="TBC", textureID = 545, end_boss_id = 17798, bosses = { [17797]="Hydromancer Thespia", [17796]="Mekgineer Steamrigger", [17798]="Warlord Kalithresh" } }
 Stautist.BossDB[546] = { name = "Underbog", type = "dungeon", tier="TBC", textureID = 546, end_boss_id = 17882, bosses = { [17770]="Hungarfen", [18105]="Ghaz'an", [17826]="Swamplord Musel'ek", [17882]="The Black Stalker" } }
 Stautist.BossDB[547] = { name = "Slave Pens", type = "dungeon", tier="TBC", textureID = 547, end_boss_id = 17942, bosses = { [17941]="Mennu the Betrayer", [17991]="Rokmar the Crackler", [17942]="Quagmirran" } }
@@ -368,3 +368,31 @@ function Stautist:LoadBossDatabase(silent)
         self:Print("Database initialized: " .. count .. " bosses across " .. zones .. " zones.")
     end
 end
+
+
+
+-- ============================================================================
+-- ZONE ALIASES (Fix for CoT & Private Server Naming Differences)
+-- ============================================================================
+Stautist.ZoneAliases = {
+    -- Caverns of Time: Old Hillsbrad
+    ["Escape from Durnholde"] = 560,
+    ["Escape from Durnholde Keep"] = 560,
+    ["Old Hillsbrad Foothills"] = 560,
+
+    -- Caverns of Time: Black Morass
+    ["Opening the Dark Portal"] = 269,
+    ["The Black Morass"] = 269,
+
+    -- Magisters' Terrace (Typo/Punctuation protection)
+    ["Magister's Terrace"] = 585, 
+    ["The Magisters' Terrace"] = 585,
+    
+    -- Auchindoun (Sometimes prefixes cause issues)
+    ["Sethekk Halls"] = 556,
+    ["Shadow Labyrinth"] = 555,
+    ["Mana-Tombs"] = 557,
+    ["Auchenai Crypts"] = 558
+}
+
+
