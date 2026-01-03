@@ -20,7 +20,7 @@ if not AceAddon then
 end
 
 -- Initialize Object (MOVED TO TOP)
-Stautist = AceAddon:NewAddon(addonName, "AceConsole-3.0", "AceEvent-3.0", "AceTimer-3.0")
+Stautist = AceAddon:NewAddon(addonName, "AceConsole-3.0", "AceEvent-3.0", "AceTimer-3.0", "AceComm-3.0")
 
 -- FAILSAFE: Ensure Class Icon Coords exist (3.3.5a fallback)
 local CLASS_ICON_TCOORDS = CLASS_ICON_TCOORDS or {
@@ -236,6 +236,7 @@ function Stautist:OnInitialize()
             social_ledger = {}, 
             social_notes = {}, -- Persistent Player Notes
             run_history = {},
+            guild_cache = {}, -- NEW: Stores guild PBs
             gold_log = {},
             -- instance_log removed from global
         },
@@ -286,6 +287,7 @@ end
 function Stautist:OnEnable()
     -- Schedule the Welcome Message (delayed for UI)
     self:ScheduleTimer("StartupSequence", 4)
+    if self.SetupComm then self:SetupComm() end
 end
 
 function Stautist:CleanupInstanceLog()
@@ -594,7 +596,7 @@ function Stautist:OpenConfigWindow()
     
     f.verText = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     f.verText:SetPoint("TOP", f.logo, "BOTTOM", 0, -5)
-    f.verText:SetText("v0.2")
+    f.verText:SetText("v0.202")
     f.verText:SetTextColor(unpack(C_RED))
     f.verText:SetFont(FONT_MAIN, 10, "OUTLINE")
 
@@ -713,7 +715,11 @@ function Stautist:SwitchTab(tabName)
     elseif tabName == "Logs" then
         self:DrawLogsContent(self.ConfigFrame.aceContainer)
     elseif tabName == "Guild" then
-        self:DrawPlaceholderContent(self.ConfigFrame.aceContainer, "coming soon maybe idk")
+        if self.DrawGuildContent then
+            self:DrawGuildContent(self.ConfigFrame.aceContainer)
+        else
+            self:DrawPlaceholderContent(self.ConfigFrame.aceContainer, "Guild Module Error")
+        end
     end
 end
 
@@ -1828,12 +1834,10 @@ end
 function Stautist:DrawBossKillsView(container)
     local AceGUI = LibStub("AceGUI-3.0")
     
-    -- Initialize filters if missing
+    -- 1. DEFAULTS
     self.log_filters = self.log_filters or {
-        exp = "WotLK", type = "dungeon", zone = "All", boss = "All", size = "All", difficulty = "Heroic"
+        exp = "All", type = "All", zone = "All", boss = "All", size = "All", difficulty = "All"
     }
-    -- Default difficulty to Heroic if not set (for existing users)
-    if not self.log_filters.difficulty then self.log_filters.difficulty = "Heroic" end
 
     -- HEADER
     local header = AceGUI:Create("SimpleGroup")
@@ -1847,164 +1851,103 @@ function Stautist:DrawBossKillsView(container)
         container:ReleaseChildren()
         self:DrawLogsContent(container) 
     end)
-    ApplyFont(btnBack)
+    if ApplyFont then ApplyFont(btnBack) end
     header:AddChild(btnBack)
     
     local title = AceGUI:Create("Label")
     title:SetText("  FASTEST BOSS KILLS (Top 20)")
-    title:SetFont("Fonts\\FRIZQT__.TTF", 14, "OUTLINE")
+    -- FIX: Use Main Font (PTSans)
+    title:SetFont(FONT_MAIN, 14, "OUTLINE") 
     title:SetColor(1, 0.8, 0)
     title:SetWidth(250)
-    ApplyFont(title, 14)
     header:AddChild(title)
 
-    -- FILTERS (Table Layout)
+    -- FILTERS
     local filters = AceGUI:Create("SimpleGroup")
-    filters:SetLayout("Table")
-    filters:SetUserData("table", {
-        columns = {
-            {weight = 1, min = 100},   -- Expansion
-            {weight = 1, min = 100},   -- Type
-            {weight = 1, min = 100},   -- Difficulty (NEW)
-            {weight = 0.5, min = 60},  -- Size
-            {weight = 1.5, min = 150}, -- Zone
-            {weight = 1.5, min = 150}, -- Boss
-        },
-        space = 10,
-        align = "BOTTOM"
-    })
+    filters:SetLayout("Flow")
     filters:SetFullWidth(true)
     container:AddChild(filters)
 
-    -- 1. Expansion
-    local dropExp = AceGUI:Create("Dropdown")
-    dropExp:SetLabel("Expansion")
-    dropExp:SetList({["Classic"]="Classic", ["TBC"]="TBC", ["WotLK"]="WotLK"})
-    dropExp:SetValue(self.log_filters.exp)
-    dropExp:SetCallback("OnValueChanged", function(_,_,val) 
-        self.log_filters.exp = val; self.log_filters.zone = "All"; self.log_filters.boss = "All"
-        container:ReleaseChildren(); self:DrawBossKillsView(container)
-    end)
-    ApplyFont(dropExp)
-    filters:AddChild(dropExp)
+    local function AddFilter(label, list, val, key, width)
+        local d = AceGUI:Create("Dropdown")
+        d:SetLabel(label)
+        d:SetList(list)
+        d:SetValue(val)
+        d:SetRelativeWidth(width)
+        d:SetCallback("OnValueChanged", function(_,_,v) 
+            self.log_filters[key] = v
+            if key == "exp" or key == "type" then 
+                self.log_filters.zone = "All"; self.log_filters.boss = "All"
+            elseif key == "zone" then
+                self.log_filters.boss = "All"
+            end
+            container:ReleaseChildren(); self:DrawBossKillsView(container)
+        end)
+        filters:AddChild(d)
+    end
 
-    -- 2. Type
-    local dropType = AceGUI:Create("Dropdown")
-    dropType:SetLabel("Type")
-    dropType:SetList({["dungeon"]="Dungeon", ["raid"]="Raid"})
-    dropType:SetValue(self.log_filters.type)
-    dropType:SetCallback("OnValueChanged", function(_,_,val)
-        self.log_filters.type = val; self.log_filters.zone = "All"; self.log_filters.boss = "All"
-        container:ReleaseChildren(); self:DrawBossKillsView(container)
-    end)
-    ApplyFont(dropType)
-    filters:AddChild(dropType)
+    AddFilter("Expansion", {["All"]="All", ["Classic"]="Classic", ["TBC"]="TBC", ["WotLK"]="WotLK"}, self.log_filters.exp, "exp", 0.14)
+    AddFilter("Type", {["All"]="All", ["dungeon"]="Dungeon", ["raid"]="Raid"}, self.log_filters.type, "type", 0.14)
+    AddFilter("Difficulty", {["All"]="All", ["Normal"]="Normal", ["Heroic"]="Heroic"}, self.log_filters.difficulty, "difficulty", 0.14)
+    AddFilter("Size", {["All"]="All", ["5"]="5", ["10"]="10", ["25"]="25"}, self.log_filters.size, "size", 0.10)
 
-    -- 3. Difficulty (NEW)
-    local dropDiff = AceGUI:Create("Dropdown")
-    dropDiff:SetLabel("Difficulty")
-    dropDiff:SetList({["Normal"]="Normal", ["Heroic"]="Heroic"})
-    dropDiff:SetValue(self.log_filters.difficulty)
-    dropDiff:SetCallback("OnValueChanged", function(_,_,val)
-        self.log_filters.difficulty = val
-        container:ReleaseChildren(); self:DrawBossKillsView(container)
-    end)
-    ApplyFont(dropDiff)
-    filters:AddChild(dropDiff)
-
-    -- 4. Size
-    local dropSize = AceGUI:Create("Dropdown")
-    dropSize:SetLabel("Size")
-    dropSize:SetList({ ["All"]="All", ["5"]="5", ["10"]="10", ["25"]="25", ["40"]="40" })
-    dropSize:SetValue(self.log_filters.size or "All")
-    dropSize:SetCallback("OnValueChanged", function(_, _, val)
-        self.log_filters.size = val; self.log_filters.zone = "All"; self.log_filters.boss = "All"
-        container:ReleaseChildren(); self:DrawBossKillsView(container)
-    end)
-    ApplyFont(dropSize)
-    filters:AddChild(dropSize)
-
-    -- 5. Zone
-    local zoneList = {}
+    -- Dynamic Zone List
+    local zoneList = {["All"] = "All Zones"}
     for id, data in pairs(self.BossDB) do
-        if data.tier == self.log_filters.exp and data.type == self.log_filters.type then
-            zoneList[id] = data.name
-        end
+        local expMatch = (self.log_filters.exp == "All") or (data.tier == self.log_filters.exp)
+        local typeMatch = (self.log_filters.type == "All") or (data.type == self.log_filters.type)
+        if expMatch and typeMatch then zoneList[id] = data.name end
     end
-    
-    local dropZone = AceGUI:Create("Dropdown")
-    dropZone:SetLabel("Zone")
-    dropZone:SetList(zoneList)
-    
-    local validZone = false
-    if self.log_filters.zone ~= "All" and zoneList[self.log_filters.zone] then validZone = true end
-    if not validZone then
-        local k = next(zoneList); if k then self.log_filters.zone = k; self.log_filters.boss = "All" else self.log_filters.zone = "None" end
-    end
-    
-    dropZone:SetValue(self.log_filters.zone)
-    dropZone:SetCallback("OnValueChanged", function(_,_,val)
-        self.log_filters.zone = val; self.log_filters.boss = "All"
-        container:ReleaseChildren(); self:DrawBossKillsView(container)
-    end)
-    ApplyFont(dropZone)
-    filters:AddChild(dropZone)
+    if self.log_filters.zone ~= "All" and not zoneList[self.log_filters.zone] then self.log_filters.zone = "All" end
+    AddFilter("Zone", zoneList, self.log_filters.zone, "zone", 0.22)
 
-    -- 6. Boss
-    local bossList = {["All"] = "Select a Boss"}
-    if self.log_filters.zone ~= "None" and self.BossDB[self.log_filters.zone] then
+    -- Dynamic Boss List
+    local bossList = {["All"] = "All Bosses"}
+    if self.log_filters.zone ~= "All" and self.BossDB[self.log_filters.zone] then
         local zData = self.BossDB[self.log_filters.zone]
         for npcID, bData in pairs(zData.bosses) do
             local bName = (type(bData) == "table") and bData.name or bData
             bossList[npcID] = bName
         end
     end
-    
-    local dropBoss = AceGUI:Create("Dropdown")
-    dropBoss:SetLabel("Boss")
-    dropBoss:SetList(bossList)
-    dropBoss:SetValue(self.log_filters.boss)
-    dropBoss:SetCallback("OnValueChanged", function(_,_,val)
-        self.log_filters.boss = val
-        container:ReleaseChildren(); self:DrawBossKillsView(container)
-    end)
-    ApplyFont(dropBoss)
-    filters:AddChild(dropBoss)
+    AddFilter("Boss", bossList, self.log_filters.boss, "boss", 0.22)
 
     -- DATA LIST
     local scroll = AceGUI:Create("ScrollFrame")
     scroll:SetLayout("Flow"); scroll:SetFullWidth(true); scroll:SetHeight(380)
     container:AddChild(scroll)
 
-    if self.log_filters.boss == "All" then
-        local lbl = AceGUI:Create("Label")
-        lbl:SetText("\n\nPlease select a specific Boss to view rankings.")
-        lbl:SetColor(0.5, 0.5, 0.5); lbl:SetFullWidth(true); lbl:SetJustifyH("CENTER")
-        ApplyFont(lbl)
-        scroll:AddChild(lbl)
-        return
-    end
-
     -- PROCESS DATA
-    local bossID = self.log_filters.boss
-    local targetDiff = self.log_filters.difficulty -- Normal or Heroic
+    local targetBoss = self.log_filters.boss
     local kills = {}
     
     if self.db.global.run_history then
         for _, run in ipairs(self.db.global.run_history) do
             local sizeMatch = (self.log_filters.size == "All") or (tostring(run.size or 0) == self.log_filters.size)
-            -- NEW: Check Difficulty
             local runDiff = run.difficulty or "Normal"
-            local diffMatch = (runDiff == targetDiff)
+            local diffMatch = (self.log_filters.difficulty == "All") or (runDiff == self.log_filters.difficulty)
+            local zoneMatch = (self.log_filters.zone == "All") or (run.zone_id == self.log_filters.zone)
             
-            if sizeMatch and diffMatch and run.boss_kills then
-                local kData = run.boss_kills[bossID] or run.boss_kills[tostring(bossID)]
-                if kData and kData.duration then
-                    table.insert(kills, {
-                        duration = kData.duration, date = run.date, roster = run.roster,
-                        run_time = run.total_time, success = run.success, wipes = run.wipes, 
-                        difficulty = run.difficulty, run_ref = run -- << ADD THIS
-                    })
+            if self.log_filters.zone == "All" and run.zone_id and self.BossDB[run.zone_id] then
+                local dbZ = self.BossDB[run.zone_id]
+                if self.log_filters.exp ~= "All" and dbZ.tier ~= self.log_filters.exp then zoneMatch = false end
+                if self.log_filters.type ~= "All" and dbZ.type ~= self.log_filters.type then zoneMatch = false end
+            end
+
+            if sizeMatch and diffMatch and zoneMatch and run.boss_kills then
+                for bID, kData in pairs(run.boss_kills) do
+                    local bIDNum = tonumber(bID)
+                    if targetBoss == "All" or bIDNum == targetBoss then
+                        -- FIX: Strict check for > 0.1 to avoid 0s
+                        if kData.duration and kData.duration > 0.1 then
+                            table.insert(kills, {
+                                duration = kData.duration, 
+                                date = run.date, 
+                                bossName = kData.name or "Unknown",
+                                run_ref = run
+                            })
+                        end
+                    end
                 end
             end
         end
@@ -2013,8 +1956,7 @@ function Stautist:DrawBossKillsView(container)
     table.sort(kills, function(a,b) return a.duration < b.duration end)
 
     if #kills == 0 then
-        local lbl = AceGUI:Create("Label"); lbl:SetText("\nNo kills recorded for this boss (" .. targetDiff .. ")."); lbl:SetJustifyH("CENTER"); lbl:SetFullWidth(true)
-        ApplyFont(lbl)
+        local lbl = AceGUI:Create("Label"); lbl:SetText("\nNo kills found matching filters."); lbl:SetJustifyH("CENTER"); lbl:SetFullWidth(true)
         scroll:AddChild(lbl)
     else
         for i = 1, math.min(#kills, 20) do
@@ -2023,48 +1965,33 @@ function Stautist:DrawBossKillsView(container)
             grp:SetLayout("Flow"); grp:SetFullWidth(true)
             
             local lblRank = AceGUI:Create("Label"); lblRank:SetText(i.."."); lblRank:SetWidth(30); lblRank:SetColor(1, 0.8, 0)
-            ApplyFont(lblRank)
             grp:AddChild(lblRank)
             
-            local lblTime = AceGUI:Create("Label"); lblTime:SetText(self:FormatTime(k.duration, true)); lblTime:SetWidth(80); lblTime:SetColor(0, 1, 0)
-            ApplyFont(lblTime)
+            local lblTime = AceGUI:Create("Label"); lblTime:SetText(self:FormatTime(k.duration, true)); lblTime:SetWidth(60); lblTime:SetColor(0, 1, 0)
             grp:AddChild(lblTime)
             
+            local infoText = k.date
+            if targetBoss == "All" then infoText = k.bossName .. "  |cff888888(" .. k.date .. ")|r" end
+
             local lblInfo = AceGUI:Create("InteractiveLabel")
-            -- We filter by difficulty now, so (HC) tag is redundant but good for safety
-            local diffShort = (k.difficulty == "Heroic") and "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_8:12|t" or ""
-            lblInfo:SetText(k.date .. " " .. diffShort)
-            lblInfo:SetWidth(150)
-            ApplyFont(lblInfo)
+            lblInfo:SetText(infoText)
+            lblInfo:SetWidth(300)
             
             lblInfo:SetCallback("OnEnter", function(widget)
                 GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
-                GameTooltip:AddLine("Kill Details (Click to Edit Note)", 1, 1, 1) -- Updated Title
-                GameTooltip:AddLine("Run Time: " .. self:FormatTime(k.run_time, true))
-                if k.run_ref.note then
-                    GameTooltip:AddLine("Note: " .. k.run_ref.note, 1, 0.8, 0, true)
-                end
-                if k.roster then
-                    GameTooltip:AddLine(" "); GameTooltip:AddLine("Group Members:", 1, 0.8, 0)
-                    for _, p in ipairs(k.roster) do
-                        local c = RAID_CLASS_COLORS[(p.class or "PRIEST"):upper()] or {r=0.7,g=0.7,b=0.7}
-                        GameTooltip:AddLine(p.name, c.r, c.g, c.b)
-                    end
-                end
+                GameTooltip:AddLine(k.bossName, 1, 1, 1)
+                GameTooltip:AddLine("Kill Duration: " .. self:FormatTime(k.duration, true))
+                GameTooltip:AddLine("Date: " .. k.date)
+                if k.run_ref.note then GameTooltip:AddLine("Note: " .. k.run_ref.note, 1, 0.8, 0, true) end
                 GameTooltip:Show()
             end)
-            lblInfo:SetCallback("OnClick", function()
-                local data = { target = k.run_ref, note = k.run_ref.note }
-                -- OLD: StaticPopup_Show("STAUTIST_EDIT_NOTE", "this Run", data)
-                -- NEW: Pass nil as 3rd arg
-                StaticPopup_Show("STAUTIST_EDIT_NOTE", "this Run", nil, data)
-            end)
+            lblInfo:SetCallback("OnLeave", function() GameTooltip:Hide() end)
+            
             grp:AddChild(lblInfo)
             scroll:AddChild(grp)
         end
     end
 end
-
 
 
 
@@ -2592,3 +2519,277 @@ end
 
 
 
+function Stautist:DrawGuildContent(container)
+    self.guild_filters = self.guild_filters or { expansion = "All", type = "All", zone = "All", difficulty = "All" }
+    
+    container:SetLayout("Flow")
+    local AceGUI = LibStub("AceGUI-3.0")
+
+    -- 1. SYNC CONTROLS
+    local grpControls = AceGUI:Create("SimpleGroup")
+    grpControls:SetLayout("Flow")
+    grpControls:SetFullWidth(true)
+    container:AddChild(grpControls)
+
+    local btnSync = AceGUI:Create("Button")
+    btnSync:SetText("SYNC GUILD DATA")
+    btnSync:SetWidth(150)
+    btnSync:SetCallback("OnClick", function() 
+        if self.StartGuildSync then self:StartGuildSync() else print("Comm module missing.") end
+    end)
+    if ApplyFont then ApplyFont(btnSync) end
+    grpControls:AddChild(btnSync)
+    
+    local lblWarn = AceGUI:Create("Label")
+    lblWarn:SetText(" (Must be out of combat)")
+    lblWarn:SetColor(0.5, 0.5, 0.5)
+    lblWarn:SetWidth(150)
+    grpControls:AddChild(lblWarn)
+
+    -- 2. FILTERS
+    local headerGrp = AceGUI:Create("SimpleGroup")
+    headerGrp:SetLayout("Flow")
+    headerGrp:SetFullWidth(true)
+    container:AddChild(headerGrp)
+
+    local dropExp = AceGUI:Create("Dropdown")
+    dropExp:SetLabel("Expansion")
+    dropExp:SetList({ ["All"]="All", ["Classic"]="Classic", ["TBC"]="TBC", ["WotLK"]="WotLK" })
+    dropExp:SetValue(self.guild_filters.expansion)
+    dropExp:SetRelativeWidth(0.24)
+    dropExp:SetCallback("OnValueChanged", function(_, _, val) self.guild_filters.expansion = val; self:RefreshGuildLeaderboard() end)
+    headerGrp:AddChild(dropExp)
+
+    local dropType = AceGUI:Create("Dropdown")
+    dropType:SetLabel("Type")
+    dropType:SetList({ ["All"]="All", ["dungeon"]="Dungeon", ["raid"]="Raid" })
+    dropType:SetValue(self.guild_filters.type)
+    dropType:SetRelativeWidth(0.24)
+    dropType:SetCallback("OnValueChanged", function(_, _, val) self.guild_filters.type = val; self:RefreshGuildLeaderboard() end)
+    headerGrp:AddChild(dropType)
+
+    local dropDiff = AceGUI:Create("Dropdown")
+    dropDiff:SetLabel("Difficulty")
+    dropDiff:SetList({ ["All"]="All", ["Normal"]="Normal", ["Heroic"]="Heroic" })
+    dropDiff:SetValue(self.guild_filters.difficulty)
+    dropDiff:SetRelativeWidth(0.24)
+    dropDiff:SetCallback("OnValueChanged", function(_, _, val) self.guild_filters.difficulty = val; self:RefreshGuildLeaderboard() end)
+    headerGrp:AddChild(dropDiff)
+
+    local zoneList = {["All"] = "All Zones"}
+    if self.BossDB then
+        for id, data in pairs(self.BossDB) do zoneList[id] = data.name end
+    end
+    local dropZone = AceGUI:Create("Dropdown")
+    dropZone:SetLabel("Zone")
+    dropZone:SetList(zoneList)
+    dropZone:SetValue(self.guild_filters.zone)
+    dropZone:SetRelativeWidth(0.24)
+    dropZone:SetCallback("OnValueChanged", function(_, _, val) self.guild_filters.zone = val; self:RefreshGuildLeaderboard() end)
+    headerGrp:AddChild(dropZone)
+
+    -- 3. SCROLL LIST
+    local scroll = AceGUI:Create("ScrollFrame")
+    scroll:SetLayout("Flow")
+    scroll:SetFullWidth(true)
+    scroll:SetHeight(400) -- Increased height since log is gone
+    container:AddChild(scroll)
+    self.guildScroll = scroll
+
+    self:RefreshGuildLeaderboard()
+end
+
+function Stautist:RefreshGuildLeaderboard()
+    if not self.guildScroll then return end
+    self.guildScroll:ReleaseChildren()
+    local AceGUI = LibStub("AceGUI-3.0")
+
+    -- 1. AGGREGATE RUNS (The Grouper)
+    local groupedRuns = {} 
+    -- Key format: "Zone_Diff_Time_Date"
+    -- Value: { data=runObj, players={name1, name2...} }
+
+    local cache = self.db.global.guild_cache or {}
+    local safeCount = 0
+    local MAX_PROCESS = 3000
+
+    for playerName, zones in pairs(cache) do
+        if type(zones) == "table" then
+            for key, run in pairs(zones) do
+                safeCount = safeCount + 1
+                if safeCount > MAX_PROCESS then break end 
+
+                -- Filter Logic
+                local isValid = true
+                local zData = self.BossDB and self.BossDB[run.z]
+                
+                if zData then
+                    if self.guild_filters.expansion ~= "All" and zData.tier ~= self.guild_filters.expansion then isValid = false end
+                    if self.guild_filters.type ~= "All" and zData.type ~= self.guild_filters.type then isValid = false end
+                end
+                
+                if self.guild_filters.difficulty ~= "All" and run.d ~= self.guild_filters.difficulty then isValid = false end
+                if self.guild_filters.zone ~= "All" and run.z ~= self.guild_filters.zone then isValid = false end
+
+                if isValid then
+                    -- Create Unique Signature (Round time to integer to match slight sync variances)
+                    local sig = run.z .. "_" .. run.d .. "_" .. math.floor(run.t) .. "_" .. (run.dt or "N/A")
+                    
+                    if not groupedRuns[sig] then
+        groupedRuns[sig] = {
+            zone_name = zData and zData.name or "Unknown",
+            time = run.t,
+            date = run.dt,
+            diff = run.d,
+            level = run.l or 80,
+            size = run.s or 5,
+            players = {} 
+        }
+    end
+    -- STORE NAME AND CLASS
+    table.insert(groupedRuns[sig].players, { name = playerName, class = run.c })
+                end
+            end
+        end
+    end
+
+    -- 2. CONVERT TO LIST & SORT
+    local displayList = {}
+    for _, group in pairs(groupedRuns) do
+        table.insert(displayList, group)
+    end
+
+    table.sort(displayList, function(a,b) 
+        return a.time < b.time 
+    end)
+
+    -- 3. RENDER
+    if #displayList == 0 then
+        local lbl = AceGUI:Create("Label")
+        lbl:SetText("\nNo guild records found matching filters.")
+        lbl:SetColor(0.5, 0.5, 0.5)
+        lbl:SetFullWidth(true)
+        lbl:SetJustifyH("CENTER")
+        self.guildScroll:AddChild(lbl)
+    else
+        local RENDER_CAP = 50
+        if #displayList > RENDER_CAP then
+            local warn = AceGUI:Create("Label")
+            warn:SetText("Showing top " .. RENDER_CAP .. " results (Capped)")
+            warn:SetColor(1, 0.5, 0)
+            warn:SetFullWidth(true)
+            warn:SetJustifyH("CENTER")
+            self.guildScroll:AddChild(warn)
+        end
+
+        local guildName, _, _ = GetGuildInfo("player")
+        if not guildName then guildName = "Guild" end
+
+        for i = 1, math.min(#displayList, RENDER_CAP) do
+            local run = displayList[i]
+            local grp = AceGUI:Create("SimpleGroup")
+            grp:SetLayout("Flow")
+            grp:SetFullWidth(true)
+
+            -- RANK
+            local lblRank = AceGUI:Create("Label")
+            lblRank:SetText(i..".")
+            lblRank:SetWidth(30)
+            lblRank:SetColor(1, 0.8, 0)
+            grp:AddChild(lblRank)
+
+            -- PLAYER / GROUP DISPLAY LOGIC
+            local count = #run.players
+            local max = run.size or 5
+            local displayNameText = ""
+
+            -- FULL GUILD RUN
+            if count >= max then
+                displayNameText = "|cff40ff40<" .. guildName .. "> Run|r"
+            
+            -- PARTIAL LARGE GROUP (4+)
+            elseif count >= 4 then
+                displayNameText = "|cffffffffGuild Group (" .. count .. ")|r"
+            
+            -- SMALL GROUP (List Names)
+            else
+                -- Sort by Name for consistency
+                table.sort(run.players, function(a,b) return a.name < b.name end)
+                
+                local names = ""
+                for k, p in ipairs(run.players) do
+                    local cColor = RAID_CLASS_COLORS[p.class] or {r=0,g=1,b=0} -- Default Green if missing
+                    local hex = string.format("|cff%02x%02x%02x", cColor.r*255, cColor.g*255, cColor.b*255)
+                    names = names .. hex .. p.name .. "|r" .. (k < count and ", " or "")
+                end
+                displayNameText = names
+            end
+
+            local lblName = AceGUI:Create("InteractiveLabel")
+            lblName:SetText(displayNameText)
+            lblName:SetWidth(150)
+            
+            -- TOOLTIP: Show exactly who was in the run (WITH COLORS)
+            lblName:SetCallback("OnEnter", function(widget)
+                GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
+                GameTooltip:AddLine("Run Participants ("..count..")", 1, 0.82, 0)
+                
+                table.sort(run.players, function(a,b) return a.name < b.name end)
+                
+                for _, p in ipairs(run.players) do
+                    local c = RAID_CLASS_COLORS[p.class] or {r=1,g=1,b=1}
+                    GameTooltip:AddLine(p.name, c.r, c.g, c.b)
+                end
+                GameTooltip:Show()
+            end)
+            lblName:SetCallback("OnLeave", function() GameTooltip:Hide() end)
+            
+            grp:AddChild(lblName)
+
+            -- ZONE & DIFF
+            local lblZone = AceGUI:Create("Label")
+            local diffShort = (run.diff == "Heroic") and "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_8:12|t" or ""
+            lblZone:SetText(run.zone_name .. " " .. diffShort)
+            lblZone:SetWidth(180)
+            grp:AddChild(lblZone)
+
+            -- TIME
+            local lblTime = AceGUI:Create("Label")
+            lblTime:SetText(self:FormatTime(run.time))
+            lblTime:SetColor(0, 1, 0)
+            lblTime:SetWidth(60)
+            grp:AddChild(lblTime)
+
+            self.guildScroll:AddChild(grp)
+        end
+    end
+end
+
+function Stautist:CreateSyncWindow()
+    if self.syncWindow and self.syncWindow:IsShown() then return end
+    
+    local AceGUI = LibStub("AceGUI-3.0")
+    local f = AceGUI:Create("Window")
+    f:SetTitle("Stautist Sync Status")
+    f:SetLayout("Fill")
+    f:SetWidth(400)
+    f:SetHeight(300)
+    f:EnableResize(false)
+    f:SetCallback("OnClose", function(widget) 
+        AceGUI:Release(widget)
+        self.syncWindow = nil
+        self.syncLogBox = nil
+    end)
+    
+    local edit = AceGUI:Create("MultiLineEditBox")
+    edit:SetLabel("")
+    edit:SetFullWidth(true)
+    edit:SetFullHeight(true)
+    edit:DisableButton(true)
+    edit:SetText("Initializing Sync...")
+    f:AddChild(edit)
+    
+    self.syncWindow = f
+    self.syncLogBox = edit
+    f:Show()
+end

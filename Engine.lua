@@ -712,25 +712,32 @@ function Stautist:GetRosterSnapshot()
     local roster = {}
     local numRaid = GetNumRaidMembers()
     local numParty = GetNumPartyMembers()
-    if numRaid == 0 and numParty == 0 then
-        local name = UnitName("player")
-        local _, class = UnitClass("player") 
-        if name and class then table.insert(roster, { name = name, class = class, level = UnitLevel("player") }) end
-        return roster
-    end
-    local prefix = (numRaid > 0) and "raid" or "party"
-    local count = (numRaid > 0) and numRaid or numParty
-    for i = 1, count do
-        local unit = prefix .. i
-        local name = UnitName(unit)
+    
+    -- Helper function to capture unit data
+    local function RecordUnit(unitID)
+        local name = UnitName(unitID)
         if name then
-            local _, class = UnitClass(unit)
-            table.insert(roster, { name = name, class = class or "UNKNOWN", level = UnitLevel(unit) or 0 })
+            local _, class = UnitClass(unitID)
+            local level = UnitLevel(unitID)
+            -- 3.3.5 API: Returns true if unit is in your guild
+            local isGuild = UnitIsInMyGuild(unitID) 
+            
+            table.insert(roster, { 
+                name = name, 
+                class = class or "UNKNOWN", 
+                level = level or 0,
+                is_guild = isGuild -- STORE THIS PERMANENTLY
+            })
         end
     end
-    if prefix == "party" then
-        local _, class = UnitClass("player")
-        table.insert(roster, { name = UnitName("player"), class = class, level = UnitLevel("player") })
+
+    if numRaid > 0 then
+        for i = 1, numRaid do RecordUnit("raid"..i) end
+    elseif numParty > 0 then
+        RecordUnit("player")
+        for i = 1, numParty do RecordUnit("party"..i) end
+    else
+        RecordUnit("player")
     end
     return roster
 end
