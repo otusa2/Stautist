@@ -179,7 +179,7 @@ Stautist.BossDB[540] = {
     name = "Shattered Halls", type = "dungeon", tier="TBC", textureID = 540, end_boss_id = 16808, 
     bosses = { 
         [16807] = { name = "Grand Warlock Nethekurse", order = 1 },
-        [24891] = { name = "Blood Guard Porung", order = 2, heroicOnly = true }, -- Added Heroic Only
+        [20923] = { name = "Blood Guard Porung", order = 2, heroicOnly = true }, -- Added Heroic Only
         [16809] = { name = "Warbringer O'mrogg", order = 3 },
         [16808] = { name = "Warchief Kargath Bladefist", order = 4 } 
     } 

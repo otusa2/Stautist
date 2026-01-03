@@ -840,32 +840,27 @@ function Stautist:COMBAT_LOG_EVENT_UNFILTERED(event, timestamp, subEvent, source
         local _
         subEvent = timestamp
         sourceGUID, sourceName, sourceFlags, destGUID, destName, destFlags = subEvent, sourceGUID, sourceName, destGUID, destName, destFlags
-        -- Capture varargs for spell info
-        -- Note: In Ace3 passed events, '...' contains the rest of the payload starting after destFlags
     end
     
     local state = self.db.char.active_run_state
     if not state.is_running then return end
 
-    -- 1. START TIMER LOGIC (Trigger on Combat)
+    -- ============================================================
+    -- 1. START RUN TIMER (Trigger on Combat while "Ready")
+    -- ============================================================
     if state.waiting_for_combat then
         local isHostile = false
         
-        -- A. Damage Events (Swing, Range, Spell, Periodic)
+        -- A. Damage Events
         if subEvent == "SWING_DAMAGE" or subEvent == "RANGE_DAMAGE" or (subEvent and subEvent:find("_DAMAGE")) then
             isHostile = true
-        
-        -- B. Debuff Application (Strict Check)
+        -- B. Debuff Application
         elseif subEvent == "SPELL_AURA_APPLIED" then
-            -- For 3.3.5: arg9=spellId, arg10=spellName, arg11=spellSchool, arg12=auraType
             local _, _, _, auraType = ...
-            if auraType == "DEBUFF" then
-                isHostile = true
-            end
+            if auraType == "DEBUFF" then isHostile = true end
         end
         
         if isHostile then
-             -- Check if Player/Pet is involved (using BitMasks, safer than API calls)
              local COMBATLOG_OBJECT_TYPE_PLAYER = COMBATLOG_OBJECT_TYPE_PLAYER or 0x00000400
              local COMBATLOG_OBJECT_TYPE_PET    = COMBATLOG_OBJECT_TYPE_PET or 0x00001000
              local COMBATLOG_OBJECT_TYPE_GUARDIAN = COMBATLOG_OBJECT_TYPE_GUARDIAN or 0x00002000
@@ -881,26 +876,48 @@ function Stautist:COMBAT_LOG_EVENT_UNFILTERED(event, timestamp, subEvent, source
                  state.waiting_for_combat = false
                  state.start_time = GetTime()
                  self:Print("|cff00ff00Combat Started! Timer Running.|r")
-                 
                  if self.ShakeHUD then self:ShakeHUD() end
              end
         end
     end
 
-    -- 2. BOSS LOGIC
+    -- ============================================================
+    -- 2. IDENTIFY BOSS (ID Match -> Name Fallback)
+    -- ============================================================
     local bossID, bossName
     if self.BossDB and self.currentZoneID then
+        local zoneData = self.BossDB[self.currentZoneID]
         local sID = tonumber(sourceGUID:sub(9, 12), 16)
         local dID = tonumber(destGUID:sub(9, 12), 16)
-        local zoneBosses = self.BossDB[self.currentZoneID].bosses
-        if sID and zoneBosses[sID] then bossID = sID; bossName = sourceName 
-        elseif dID and zoneBosses[dID] then bossID = dID; bossName = destName end
+        
+        -- A. Try ID Match (Fastest/Safest)
+        if sID and zoneData.bosses[sID] then 
+            bossID = sID; bossName = sourceName 
+        elseif dID and zoneData.bosses[dID] then 
+            bossID = dID; bossName = destName 
+        end
+
+        -- B. Try Name Match (Fallback if ID failed - Fixes Porung)
+        if not bossID and (sourceName or destName) then
+             for bID, bData in pairs(zoneData.bosses) do
+                local bName = (type(bData) == "table") and bData.name or bData
+                if sourceName and bName == sourceName then
+                    bossID = bID; bossName = sourceName; break
+                end
+                if destName and bName == destName then
+                    bossID = bID; bossName = destName; break
+                end
+             end
+        end
     end
 
+    -- ============================================================
+    -- 3. BOSS ACTIONS (Rename & Fight Timer)
+    -- ============================================================
     if bossID then
         local bData = self.BossDB[self.currentZoneID].bosses[bossID]
         
-        -- DYNAMIC RENAME
+        -- DYNAMIC RENAME (Violet Hold / Encounters)
         if type(bData) == "table" then
             if bData.encounter then
                  if self.UpdateRowName then self:UpdateRowName(bData.encounter, bData.name) end
@@ -919,10 +936,8 @@ function Stautist:COMBAT_LOG_EVENT_UNFILTERED(event, timestamp, subEvent, source
             end
         end
 
-        -- BOSS FIGHT TIMER LOGIC
-        -- Re-using isHostile check logic but simpler for Boss tracking
+        -- BOSS FIGHT TIMER START
         local isAction = (subEvent == "SWING_DAMAGE" or subEvent == "RANGE_DAMAGE" or (subEvent and subEvent:find("_DAMAGE")) or subEvent == "SPELL_AURA_APPLIED")
-        
         local COMBATLOG_OBJECT_TYPE_PLAYER = COMBATLOG_OBJECT_TYPE_PLAYER or 0x00000400
         local sIsPlayer = sourceFlags and (bit.band(sourceFlags, COMBATLOG_OBJECT_TYPE_PLAYER) > 0)
         local dIsPlayer = destFlags and (bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) > 0)
@@ -936,6 +951,9 @@ function Stautist:COMBAT_LOG_EVENT_UNFILTERED(event, timestamp, subEvent, source
         end
     end
     
+    -- ============================================================
+    -- 4. BOSS DEATH (Kill Credit)
+    -- ============================================================
     if subEvent == "UNIT_DIED" then
         if destName and UnitIsPlayer(destName) then
             if state.combat_boss_id then state.combat_deaths = (state.combat_deaths or 0) + 1 end
