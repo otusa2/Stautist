@@ -214,7 +214,15 @@ function Stautist:StopRun(isComplete, reason)
     local bossesKilled = 0
     local totalBosses = 0
     if self.BossDB[zID] then
-        for _ in pairs(self.BossDB[zID].bosses) do totalBosses = totalBosses + 1 end
+        -- Count TOTAL available bosses for this difficulty
+        for _, bData in pairs(self.BossDB[zID].bosses) do
+            local isHeroicOnly = (type(bData)=="table" and bData.heroicOnly)
+            local skip = false
+            if isHeroicOnly and (state.difficulty ~= "Heroic") then skip = true end
+            
+            if not skip then totalBosses = totalBosses + 1 end
+        end
+        -- Count KILLED bosses
         for _ in pairs(state.boss_kills or {}) do bossesKilled = bossesKilled + 1 end
     end
 
@@ -933,8 +941,27 @@ function Stautist:COMBAT_LOG_EVENT_UNFILTERED(event, timestamp, subEvent, source
             if state.combat_boss_id then state.combat_deaths = (state.combat_deaths or 0) + 1 end
         else
             local npcID = tonumber(destGUID:sub(9, 12), 16)
-            if self.currentZoneID and self.BossDB[self.currentZoneID].bosses[npcID] then
-                self:OnBossKill(npcID, destName)
+            local zoneData = self.currentZoneID and self.BossDB[self.currentZoneID]
+            
+            if zoneData then
+                -- 1. Try ID Match
+                if zoneData.bosses[npcID] then
+                    self:OnBossKill(npcID, destName)
+                
+                -- 2. Try Name Match (Fallback for Weird IDs)
+                elseif destName then
+                    for bID, bData in pairs(zoneData.bosses) do
+                        local bName = (type(bData) == "table") and bData.name or bData
+                        if bName == destName then
+                            -- Only trigger if this boss hasn't been killed yet this run
+                            if not self.db.char.active_run_state.boss_kills[bID] then
+                                self:Print("[Debug] ID Fix: " .. destName .. " (" .. npcID .. " -> " .. bID .. ")")
+                                self:OnBossKill(bID, destName)
+                            end
+                            break
+                        end
+                    end
+                end
             end
         end
     end

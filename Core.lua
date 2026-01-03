@@ -1213,7 +1213,13 @@ function Stautist:CreateLeaderboardRow(container, rank, run)
         if run.partial then
             GameTooltip:AddLine("Progress: " .. (run.progress or "?/?") .. " (Partial)", 1, 0.8, 0)
         else
-            GameTooltip:AddLine("Status: Full Clear", 0, 1, 0)
+            -- Check if actually 100%
+            local k, t = strsplit("/", run.progress or "0/0")
+            if k == t then
+                GameTooltip:AddLine("Status: Full Clear", 0, 1, 0)
+            else
+                GameTooltip:AddLine("Status: Clear (Skipped "..(tonumber(t)-tonumber(k))..")", 1, 1, 0)
+            end
         end
         GameTooltip:AddLine("Tier: " .. (run.tier or "Classic"), 0.6, 0.6, 0.6)
 
