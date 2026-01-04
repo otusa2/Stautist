@@ -97,10 +97,12 @@ function Stautist:OnCommReceived(prefix, message, distribution, sender)
 
     -- Handle Version Check
     if self.sync_status[sender] then
+        -- Store the version they are using
+        self.sync_status[sender].version = remoteVersion 
+        
         if remoteVersion ~= self.VERSION then
-            self.sync_status[sender].status = "|cffff0000Outdated (v" .. (remoteVersion or "???") .. ")|r"
+            self.sync_status[sender].status = "|cffff0000Outdated|r"
             self:UpdateSyncLogDisplay()
-            -- If they pinged us with an old version, don't reply to avoid crashing them
             if type == "PING" then return end 
         end
     end
@@ -152,12 +154,22 @@ function Stautist:SendMyData(target)
 
     -- 2. Package EVERYTHING I know about the guild (Chain Sync)
     if self.db.global.guild_cache then
-        for guildieName, pbs in pairs(self.db.global.guild_cache) do
-            if guildieName ~= myName and guildieName ~= target then
-                dataToSend[guildieName] = pbs
+    for guildieName, pbs in pairs(self.db.global.guild_cache) do
+        if guildieName ~= myName and guildieName ~= target and type(pbs) == "table" then
+            -- Create a clean table to send only valid numeric PBs
+            local cleanPBs = {}
+            for k, v in pairs(pbs) do
+                if type(v) == "table" and type(v.t) == "number" then
+                    cleanPBs[k] = v
+                end
+            end
+            -- Only add this player to the payload if they have valid runs
+            if next(cleanPBs) then
+                dataToSend[guildieName] = cleanPBs
             end
         end
     end
+end
 
     local payload = AceSerializer:Serialize("DATA", self.VERSION, dataToSend)
     self:SendCommMessage(self.COMM_PREFIX, payload, "WHISPER", target)
@@ -183,18 +195,36 @@ function Stautist:ProcessIncomingData(sender, data)
     if not data or type(data) ~= "table" then return end
     if not self.db.global.guild_cache then self.db.global.guild_cache = {} end
     
+    local myName = UnitName("player")
+    
     for playerName, pbs in pairs(data) do
-        if playerName ~= UnitName("player") then -- Don't let others overwrite my own local data
-            if not self.db.global.guild_cache[playerName] then self.db.global.guild_cache[playerName] = {} end
-            for key, runInfo in pairs(pbs) do
-                -- Only save if it's a better time than what we currently have for that player
-                local current = self.db.global.guild_cache[playerName][key]
-                if not current or runInfo.t < current.t then
-                    self.db.global.guild_cache[playerName][key] = runInfo
-                end
+        -- 1. Don't let others overwrite my own local data
+        -- 2. Ensure pbs is a valid table
+        if playerName ~= myName and type(pbs) == "table" then 
+            if not self.db.global.guild_cache[playerName] then 
+                self.db.global.guild_cache[playerName] = {} 
             end
-        end
-    end
+            
+            for key, runInfo in pairs(pbs) do
+                -- FAILSAFE: Only process if incoming data has a valid numeric time
+                if type(runInfo) == "table" and type(runInfo.t) == "number" then
+                    local current = self.db.global.guild_cache[playerName][key]
+                    local shouldUpdate = false
+
+                    -- Update if we have no data, or if the new time is better
+                    if not current or type(current) ~= "table" or type(current.t) ~= "number" then
+                        shouldUpdate = true
+                    elseif runInfo.t < current.t then
+                        shouldUpdate = true
+                    end
+
+                    if shouldUpdate then
+                        self.db.global.guild_cache[playerName][key] = runInfo
+                    end
+                end
+            end -- end pbs loop
+        end -- end playerName check
+    end -- end data loop
 end
 
 -- ============================================================================
@@ -214,15 +244,25 @@ function Stautist:UpdateSyncLogDisplay()
     if not self.syncLogBox then return end
     
     local txt = "--- Sync Status ---\n"
-    for name, info in pairs(self.sync_status) do
-        local color = "|cffffffff" -- White
+    -- Sort names alphabetically for the log display
+    local sortedNames = {}
+    for name in pairs(self.sync_status) do table.insert(sortedNames, name) end
+    table.sort(sortedNames)
+
+    for _, name in ipairs(sortedNames) do
+        local info = self.sync_status[name]
+        local displayName = name
+        
         -- Add Class Color to name
         local cObj = RAID_CLASS_COLORS[info.class]
         if cObj then 
-            name = string.format("|cff%02x%02x%02x%s|r", cObj.r*255, cObj.g*255, cObj.b*255, name)
+            displayName = string.format("|cff%02x%02x%02x%s|r", cObj.r*255, cObj.g*255, cObj.b*255, name)
         end
         
-        txt = txt .. name .. ": " .. info.status .. "\n"
+        -- Add version string if we have it
+        local verStr = info.version and (" (v" .. info.version .. ")") or ""
+        
+        txt = txt .. displayName .. ": " .. info.status .. verStr .. "\n"
     end
     self.syncLogBox:SetText(txt)
 end
