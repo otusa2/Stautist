@@ -22,6 +22,61 @@ end
 -- Initialize Object (MOVED TO TOP)
 Stautist = AceAddon:NewAddon(addonName, "AceConsole-3.0", "AceEvent-3.0", "AceTimer-3.0", "AceComm-3.0")
 
+
+
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+
+Stautist.VERSION = "0.203"
+
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+-- ============================================================================
+
+-- ===========================================================================
+
+
+
+function Stautist:GetSortedList(rawTable)
+    local sortedKeys = {}
+    for k, v in pairs(rawTable) do table.insert(sortedKeys, k) end
+    table.sort(sortedKeys, function(a, b) 
+        if a == "All" then return true end
+        if b == "All" then return false end
+        local nameA = rawTable[a] or ""
+        local nameB = rawTable[b] or ""
+        return nameA < nameB 
+    end)
+    return sortedKeys
+end
+
+function Stautist:GetShortName(fullName)
+    if not fullName then return nil end
+    return string.match(fullName, "([^-]+)")
+end
+
+
+
+
 -- FAILSAFE: Ensure Class Icon Coords exist (3.3.5a fallback)
 local CLASS_ICON_TCOORDS = CLASS_ICON_TCOORDS or {
     ["WARRIOR"] = {0, 0.25, 0, 0.25}, ["MAGE"] = {0.25, 0.5, 0, 0.25},
@@ -77,6 +132,8 @@ local function ApplyFont(widget, size)
         if widget.titletext then widget.titletext:SetFont(FONT_MAIN, s + 2) end
     end
 end
+
+
 
 
 -- ============================================================================
@@ -596,7 +653,7 @@ function Stautist:OpenConfigWindow()
     
     f.verText = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     f.verText:SetPoint("TOP", f.logo, "BOTTOM", 0, -5)
-    f.verText:SetText("v0.202")
+    f.verText:SetText("v" .. Stautist.VERSION)
     f.verText:SetTextColor(unpack(C_RED))
     f.verText:SetFont(FONT_MAIN, 10, "OUTLINE")
 
@@ -1066,7 +1123,8 @@ function Stautist:DrawLeaderboardContent(container)
     end
     local dropZone = AceGUI:Create("Dropdown")
     dropZone:SetLabel("Zone")
-    dropZone:SetList(zoneList)
+    local sortedZoneIDs = self:GetSortedList(zoneList)
+    dropZone:SetList(zoneList, sortedZoneIDs)
     dropZone:SetValue(self.lb_filters.zone)
     dropZone:SetCallback("OnValueChanged", function(_, _, val) 
         self.lb_filters.zone = val; self:RefreshLeaderboard() 
@@ -1097,21 +1155,25 @@ function Stautist:RefreshLeaderboard()
     local AceGUI = LibStub("AceGUI-3.0")
 
     if self.lb_dropZone and self.BossDB then
-        local newList = {["All"] = "All Zones"}
-        for id, data in pairs(self.BossDB) do
-            local tierMatch = (self.lb_filters.expansion == "All" or data.tier == self.lb_filters.expansion)
-            local typeMatch = (self.lb_filters.type == "All" or data.type == self.lb_filters.type)
-            
-            if tierMatch and typeMatch then
-                newList[id] = data.name
-            end
-        end
-        self.lb_dropZone:SetList(newList)
-        if self.lb_filters.zone ~= "All" and not newList[self.lb_filters.zone] then 
-            self.lb_filters.zone = "All" 
-            self.lb_dropZone:SetValue("All")
+    local newList = {["All"] = "All Zones"}
+    for id, data in pairs(self.BossDB) do
+        local tierMatch = (self.lb_filters.expansion == "All" or data.tier == self.lb_filters.expansion)
+        local typeMatch = (self.lb_filters.type == "All" or data.type == self.lb_filters.type)
+        
+        if tierMatch and typeMatch then
+            newList[id] = data.name
         end
     end
+    
+    -- FIX: Re-sort the keys before calling SetList
+    local sortedKeys = self:GetSortedList(newList)
+    self.lb_dropZone:SetList(newList, sortedKeys)
+    
+    if self.lb_filters.zone ~= "All" and not newList[self.lb_filters.zone] then 
+        self.lb_filters.zone = "All" 
+        self.lb_dropZone:SetValue("All")
+    end
+end
 
     local runs = {}
     local history = self.db.global.run_history or {}
@@ -1739,7 +1801,7 @@ function Stautist:DrawLogsContent(container)
     
     local limitText = AceGUI:Create("Label")
     limitText:SetText(string.format("Instances entered in last 60 min: %s%d / 5|r", colorHex, count))
-    limitText:SetFont("Fonts\\FRIZQT__.TTF", 14, "OUTLINE")
+    limitText:SetFont(FONT_MAIN, 14, "OUTLINE")
     limitText:SetFullWidth(true)
     limitText:SetJustifyH("CENTER")
     grpLimit:AddChild(limitText)
@@ -1899,7 +1961,17 @@ function Stautist:DrawBossKillsView(container)
         if expMatch and typeMatch then zoneList[id] = data.name end
     end
     if self.log_filters.zone ~= "All" and not zoneList[self.log_filters.zone] then self.log_filters.zone = "All" end
-    AddFilter("Zone", zoneList, self.log_filters.zone, "zone", 0.22)
+    local sortedZones = self:GetSortedList(zoneList)
+    local dZone = AceGUI:Create("Dropdown")
+    dZone:SetLabel("Zone")
+    dZone:SetList(zoneList, sortedZones)
+    dZone:SetValue(self.log_filters.zone)
+    dZone:SetRelativeWidth(0.22)
+    dZone:SetCallback("OnValueChanged", function(_,_,v) 
+        self.log_filters.zone = v; self.log_filters.boss = "All"
+        container:ReleaseChildren(); self:DrawBossKillsView(container)
+    end)
+    filters:AddChild(dZone)
 
     -- Dynamic Boss List
     local bossList = {["All"] = "All Bosses"}
@@ -1910,7 +1982,17 @@ function Stautist:DrawBossKillsView(container)
             bossList[npcID] = bName
         end
     end
-    AddFilter("Boss", bossList, self.log_filters.boss, "boss", 0.22)
+    local sortedBosses = self:GetSortedList(bossList)
+    local dBoss = AceGUI:Create("Dropdown")
+    dBoss:SetLabel("Boss")
+    dBoss:SetList(bossList, sortedBosses)
+    dBoss:SetValue(self.log_filters.boss)
+    dBoss:SetRelativeWidth(0.22)
+    dBoss:SetCallback("OnValueChanged", function(_,_,v) 
+        self.log_filters.boss = v
+        container:ReleaseChildren(); self:DrawBossKillsView(container)
+    end)
+    filters:AddChild(dBoss)
 
     -- DATA LIST
     local scroll = AceGUI:Create("ScrollFrame")
@@ -1978,13 +2060,38 @@ function Stautist:DrawBossKillsView(container)
             lblInfo:SetWidth(300)
             
             lblInfo:SetCallback("OnEnter", function(widget)
-                GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
-                GameTooltip:AddLine(k.bossName, 1, 1, 1)
-                GameTooltip:AddLine("Kill Duration: " .. self:FormatTime(k.duration, true))
-                GameTooltip:AddLine("Date: " .. k.date)
-                if k.run_ref.note then GameTooltip:AddLine("Note: " .. k.run_ref.note, 1, 0.8, 0, true) end
-                GameTooltip:Show()
-            end)
+            local run = k.run_ref
+            GameTooltip:SetOwner(widget.frame, "ANCHOR_TOP")
+            GameTooltip:AddLine(k.bossName, 1, 1, 1)
+            GameTooltip:AddDoubleLine("Kill Time:", "|cff00ff00"..self:FormatTime(k.duration, true))
+            GameTooltip:AddDoubleLine("Run Total:", "|cffffffff"..self:FormatTime(run.total_time, true))
+            GameTooltip:AddDoubleLine("Date:", "|cffaaaaaa"..k.date)
+            
+            -- Squad Info
+            if run.roster then
+                GameTooltip:AddLine(" ")
+                GameTooltip:AddLine("Squad:", 1, 0.82, 0)
+                for _, p in ipairs(run.roster) do
+                    local c = self:SafeGetClassColor(p.class)
+                    GameTooltip:AddLine(p.name .. (p.level and " ("..p.level..")" or ""), c.r, c.g, c.b)
+                end
+            end
+
+            -- Other Bosses in this specific run
+            if run.boss_kills then
+                GameTooltip:AddLine(" ")
+                GameTooltip:AddLine("Run Splits:", 1, 0.82, 0)
+                local sortedB = {}
+                for id, bData in pairs(run.boss_kills) do table.insert(sortedB, bData) end
+                table.sort(sortedB, function(a,b) return (a.split_time or 0) < (b.split_time or 0) end)
+                
+                for _, b in ipairs(sortedB) do
+                    local color = (b.name == k.bossName) and "|cff00ff00" or "|cffffffff"
+                    GameTooltip:AddDoubleLine(color..b.name, "|cffffffff"..self:FormatTime(b.split_time))
+                end
+            end
+            GameTooltip:Show()
+        end)
             lblInfo:SetCallback("OnLeave", function() GameTooltip:Hide() end)
             
             grp:AddChild(lblInfo)
@@ -2582,7 +2689,8 @@ function Stautist:DrawGuildContent(container)
     end
     local dropZone = AceGUI:Create("Dropdown")
     dropZone:SetLabel("Zone")
-    dropZone:SetList(zoneList)
+    local sortedGuildZones = self:GetSortedList(zoneList)
+    dropZone:SetList(zoneList, sortedGuildZones)
     dropZone:SetValue(self.guild_filters.zone)
     dropZone:SetRelativeWidth(0.24)
     dropZone:SetCallback("OnValueChanged", function(_, _, val) self.guild_filters.zone = val; self:RefreshGuildLeaderboard() end)
@@ -2605,50 +2713,58 @@ function Stautist:RefreshGuildLeaderboard()
     local AceGUI = LibStub("AceGUI-3.0")
 
     -- 1. AGGREGATE RUNS (The Grouper)
-    local groupedRuns = {} 
-    -- Key format: "Zone_Diff_Time_Date"
-    -- Value: { data=runObj, players={name1, name2...} }
+     local groupedRuns = {} 
+    local function AddToGroup(playerName, run)
+    if type(run) ~= "table" or not run or not run.z then return end
+        
+        -- 1. Correct Filter Logic
+        local zData = self.BossDB[run.z]
+        if not zData then return end -- Skip if zone not in DB
 
-    local cache = self.db.global.guild_cache or {}
-    local safeCount = 0
-    local MAX_PROCESS = 3000
+        if self.guild_filters.expansion ~= "All" and zData.tier ~= self.guild_filters.expansion then return end
+        if self.guild_filters.type ~= "All" and zData.type ~= self.guild_filters.type then return end
+        if self.guild_filters.difficulty ~= "All" and run.d ~= self.guild_filters.difficulty then return end
+        if self.guild_filters.zone ~= "All" and run.z ~= self.guild_filters.zone then return end
 
-    for playerName, zones in pairs(cache) do
-        if type(zones) == "table" then
-            for key, run in pairs(zones) do
-                safeCount = safeCount + 1
-                if safeCount > MAX_PROCESS then break end 
-
-                -- Filter Logic
-                local isValid = true
-                local zData = self.BossDB and self.BossDB[run.z]
-                
-                if zData then
-                    if self.guild_filters.expansion ~= "All" and zData.tier ~= self.guild_filters.expansion then isValid = false end
-                    if self.guild_filters.type ~= "All" and zData.type ~= self.guild_filters.type then isValid = false end
-                end
-                
-                if self.guild_filters.difficulty ~= "All" and run.d ~= self.guild_filters.difficulty then isValid = false end
-                if self.guild_filters.zone ~= "All" and run.z ~= self.guild_filters.zone then isValid = false end
-
-                if isValid then
-                    -- Create Unique Signature (Round time to integer to match slight sync variances)
-                    local sig = run.z .. "_" .. run.d .. "_" .. math.floor(run.t) .. "_" .. (run.dt or "N/A")
-                    
-                    if not groupedRuns[sig] then
-        groupedRuns[sig] = {
-            zone_name = zData and zData.name or "Unknown",
-            time = run.t,
-            date = run.dt,
-            diff = run.d,
-            level = run.l or 80,
-            size = run.s or 5,
-            players = {} 
-        }
+        -- 2. Grouping Signature
+        local sig = run.z .. "_" .. run.d .. "_" .. math.floor(run.t) .. "_" .. (run.dt or "N/A")
+        
+        if not groupedRuns[sig] then
+            groupedRuns[sig] = {
+                zone_name = zData.name,
+                time = run.t,
+                date = run.dt,
+                diff = run.d,
+                level = run.l or 80,
+                size = run.s or 5,
+                players = {} 
+            }
+        end
+        table.insert(groupedRuns[sig].players, { name = playerName, class = run.c })
     end
-    -- STORE NAME AND CLASS
-    table.insert(groupedRuns[sig].players, { name = playerName, class = run.c })
-                end
+
+    -- A. Add Guildmates
+    local cache = self.db.global.guild_cache or {}
+    for pName, zones in pairs(cache) do
+        for _, run in pairs(zones) do AddToGroup(pName, run) end
+    end
+
+    -- B. Add YOURSELF (The User)
+    local _, myClass = UnitClass("player")
+    local myName = UnitName("player")
+    if self.db.global.run_history then
+        for _, run in ipairs(self.db.global.run_history) do
+            if run.success and run.total_time and run.zone_id then
+                local myRunFormatted = {
+                    z = run.zone_id,
+                    d = run.difficulty or "Normal",
+                    t = run.total_time,
+                    dt = run.date,
+                    l = self:GetMaxLevel(run.roster),
+                    s = run.size or 5,
+                    c = myClass
+                }
+                AddToGroup(myName, myRunFormatted)
             end
         end
     end

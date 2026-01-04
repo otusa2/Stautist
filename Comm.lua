@@ -4,6 +4,10 @@ local Stautist = LibStub("AceAddon-3.0"):GetAddon("Stautist")
 local AceComm = LibStub("AceComm-3.0")
 local AceSerializer = LibStub("AceSerializer-3.0")
 
+
+
+
+
 Stautist.COMM_PREFIX = "StautistSync"
 
 function Stautist:SetupComm()
@@ -20,27 +24,26 @@ function Stautist:StartGuildSync()
         self:Print("Error: You are in combat. Sync aborted.")
         return 
     end
-
     if not IsInGuild() then
         self:Print("Error: You are not in a guild.")
         return
     end
 
-    -- 1. SHOW POPUP
     self:CreateSyncWindow() 
-    
-    -- 2. INITIALIZE
-    self:LogSync("--- Starting Sync ---")
+    self:LogSync("--- Starting Sync (v" .. self.VERSION .. ") ---")
     self.sync_status = {}
     
-    -- 3. Snapshot Online Guild Members
     local numMembers = GetNumGuildMembers()
     local onlineCount = 0
     for i = 1, numMembers do
-        local name, rank, _, level, _, _, _, _, online, _, class = GetGuildRosterInfo(i)
-        if online and name ~= UnitName("player") then
-            self.sync_status[name] = { status = "Waiting...", class = class }
-            onlineCount = onlineCount + 1
+        local name, _, _, _, _, _, _, _, online, _, class = GetGuildRosterInfo(i)
+        if online and name then
+            -- Note: name in 3.3.5 might be "Name-Server", we strip it for the internal key
+            local shortName = self:GetShortName(name)
+            if shortName ~= UnitName("player") then
+                self.sync_status[shortName] = { status = "Waiting...", class = class }
+                onlineCount = onlineCount + 1
+            end
         end
     end
 
@@ -49,18 +52,14 @@ function Stautist:StartGuildSync()
         return
     end
 
-    self:LogSync("Pinging " .. onlineCount .. " online members...")
-    
-    -- 4. Send Ping
-    local payload = AceSerializer:Serialize("PING", "1.0")
+    self:LogSync("Pinging " .. onlineCount .. " members...")
+    -- Send PING with our version
+    local payload = AceSerializer:Serialize("PING", self.VERSION)
     self:SendCommMessage(self.COMM_PREFIX, payload, "GUILD")
-
-    -- 5. Update Log Window immediately
     self:UpdateSyncLogDisplay()
-
-    -- 6. Schedule Timeout (5 Seconds)
     self:ScheduleTimer("FinishGuildSync", 5)
 end
+
 
 function Stautist:FinishGuildSync()
     local countSuccess = 0
@@ -89,74 +88,83 @@ end
 
 function Stautist:OnCommReceived(prefix, message, distribution, sender)
     if prefix ~= self.COMM_PREFIX then return end
-    if sender == UnitName("player") then return end -- Ignore self
+    sender = self:GetShortName(sender)
+    if sender == UnitName("player") then return end 
 
-    local success, type, data = AceSerializer:Deserialize(message)
+    -- We now expect success, type, remoteVersion, and then the data
+    local success, type, remoteVersion, data = AceSerializer:Deserialize(message)
     if not success then return end
 
-    -- CASE 1: WE RECEIVED A PING (Someone wants our data)
+    -- Handle Version Check
+    if self.sync_status[sender] then
+        if remoteVersion ~= self.VERSION then
+            self.sync_status[sender].status = "|cffff0000Outdated (v" .. (remoteVersion or "???") .. ")|r"
+            self:UpdateSyncLogDisplay()
+            -- If they pinged us with an old version, don't reply to avoid crashing them
+            if type == "PING" then return end 
+        end
+    end
+
     if type == "PING" then
     if UnitAffectingCombat("player") then
-            -- Tell them we are busy
-            local reply = AceSerializer:Serialize("BUSY")
-            self:SendCommMessage(self.COMM_PREFIX, reply, "WHISPER", sender)
-        else
-            -- Send our PBs
-            -- Wait a random tiny bit to prevent flooding the sender
-            local delay = math.random() * 2.0 -- 0 to 2 seconds
-            self:ScheduleTimer(function() 
-                self:SendMyData(sender)
-            end, delay)
+        -- FIX: Added self.VERSION to the BUSY reply
+        local reply = AceSerializer:Serialize("BUSY", self.VERSION)
+        self:SendCommMessage(self.COMM_PREFIX, reply, "WHISPER", sender)
+    else
+            self:ScheduleTimer(function() self:SendMyData(sender) end, math.random(0.1, 1.5))
         end
-        return
-    end
-
-    -- CASE 2: WE RECEIVED A BUSY SIGNAL
-    if type == "BUSY" then
+    elseif type == "BUSY" then
         if self.sync_status[sender] then
-            self.sync_status[sender].status = "|cffff0000In Combat|r"
+            self.sync_status[sender].status = "|cffffaa00In Combat|r"
             self:UpdateSyncLogDisplay()
         end
-        return
-    end
-
-    -- CASE 3: WE RECEIVED DATA
-    if type == "DATA" then
+    elseif type == "DATA" then
         if self.sync_status[sender] then
             self.sync_status[sender].status = "|cff00ff00Success|r"
+            -- Data is the 4th return from Deserialize now
             self:ProcessIncomingData(sender, data)
             self:UpdateSyncLogDisplay()
         end
-        return
     end
 end
 
 function Stautist:SendMyData(target)
-    local pbs = {}
-    local _, myClass = UnitClass("player") -- GET MY CLASS
+    local dataToSend = {}
+    local _, myClass = UnitClass("player")
+    local myName = UnitName("player")
 
+    -- 1. Package MY PBs
     if self.db.global.run_history then
         for _, run in ipairs(self.db.global.run_history) do
-            if run.success and run.total_time and run.zone_id then
+            if run.success and run.total_time and run.total_time > 0 and run.zone_id then
                 local key = run.zone_id .. "_" .. (run.difficulty or "Normal")
-                
-                if not pbs[key] or run.total_time < pbs[key].time then
-                    pbs[key] = {
-                        z = run.zone_id,
-                        d = run.difficulty or "Normal",
-                        t = run.total_time,
-                        dt = run.date,
-                        l = self:GetMaxLevel(run.roster),
-                        s = run.size or 5,
-                        c = myClass -- SEND CLASS
+                if not dataToSend[myName] then dataToSend[myName] = {} end
+                if not dataToSend[myName][key] or run.total_time < dataToSend[myName][key].t then
+                    dataToSend[myName][key] = {
+                        z = run.zone_id, d = run.difficulty or "Normal",
+                        t = run.total_time, dt = run.date,
+                        l = self:GetMaxLevel(run.roster), s = run.size or 5, c = myClass
                     }
                 end
             end
         end
     end
-    local payload = AceSerializer:Serialize("DATA", pbs)
+
+    -- 2. Package EVERYTHING I know about the guild (Chain Sync)
+    if self.db.global.guild_cache then
+        for guildieName, pbs in pairs(self.db.global.guild_cache) do
+            if guildieName ~= myName and guildieName ~= target then
+                dataToSend[guildieName] = pbs
+            end
+        end
+    end
+
+    local payload = AceSerializer:Serialize("DATA", self.VERSION, dataToSend)
     self:SendCommMessage(self.COMM_PREFIX, payload, "WHISPER", target)
 end
+
+
+
 
 function Stautist:GetMaxLevel(roster)
     if not roster then return 80 end
@@ -173,19 +181,19 @@ end
 
 function Stautist:ProcessIncomingData(sender, data)
     if not data or type(data) ~= "table" then return end
-    
     if not self.db.global.guild_cache then self.db.global.guild_cache = {} end
     
-    -- Ensure sender entry exists
-    if not self.db.global.guild_cache[sender] then 
-        self.db.global.guild_cache[sender] = {} 
-    end
-    
-    -- Merge Data
-    -- data is { ["604_Heroic"] = {z=604, d="Heroic", t=900, dt="..", l=80} }
-    for key, runInfo in pairs(data) do
-        -- We just overwrite local cache with their reported PBs
-        self.db.global.guild_cache[sender][key] = runInfo
+    for playerName, pbs in pairs(data) do
+        if playerName ~= UnitName("player") then -- Don't let others overwrite my own local data
+            if not self.db.global.guild_cache[playerName] then self.db.global.guild_cache[playerName] = {} end
+            for key, runInfo in pairs(pbs) do
+                -- Only save if it's a better time than what we currently have for that player
+                local current = self.db.global.guild_cache[playerName][key]
+                if not current or runInfo.t < current.t then
+                    self.db.global.guild_cache[playerName][key] = runInfo
+                end
+            end
+        end
     end
 end
 
