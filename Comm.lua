@@ -112,7 +112,8 @@ function Stautist:OnCommReceived(prefix, message, distribution, sender)
     sender = self:GetShortName(sender)
     if sender == UnitName("player") then return end 
 
-    local success, type, remoteVersion, data = AceSerializer:Deserialize(message)
+    -- SUCCESS: Renamed 'type' to 'msgType' to avoid shadowing the global type() function
+    local success, msgType, remoteVersion, data = AceSerializer:Deserialize(message)
     if not success then return end
 
     if self.sync_status and self.sync_status[sender] then
@@ -120,12 +121,12 @@ function Stautist:OnCommReceived(prefix, message, distribution, sender)
         if remoteVersion ~= self.VERSION then
             self.sync_status[sender].status = "|cffff0000Outdated|r"
             self:UpdateSyncLogDisplay()
-            if type == "PING" then return end 
+            if msgType == "PING" then return end 
         end
     end
 
-    if type == "PING" then
-        -- NEW: If the Pinger sent data, process it now!
+    if msgType == "PING" then
+        -- This now works because 'type' refers to the Lua function again
         if data and type(data) == "table" then
             self:ProcessIncomingData(sender, data)
         end
@@ -136,13 +137,13 @@ function Stautist:OnCommReceived(prefix, message, distribution, sender)
         else
             self:ScheduleTimer(function() self:SendMyData(sender) end, math.random(0.1, 1.5))
         end
-    elseif type == "BUSY" then
-        if self.sync_status[sender] then
+    elseif msgType == "BUSY" then
+        if self.sync_status and self.sync_status[sender] then
             self.sync_status[sender].status = "|cffffaa00In Combat|r"
             self:UpdateSyncLogDisplay()
         end
-    elseif type == "DATA" then
-        if self.sync_status[sender] then
+    elseif msgType == "DATA" then
+        if self.sync_status and self.sync_status[sender] then
             self.sync_status[sender].status = "|cff00ff00Success|r"
             self:ProcessIncomingData(sender, data)
             self:UpdateSyncLogDisplay()
