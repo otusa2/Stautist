@@ -38,7 +38,6 @@ function Stautist:StartGuildSync()
     for i = 1, numMembers do
         local name, _, _, _, _, _, _, _, online, _, class = GetGuildRosterInfo(i)
         if online and name then
-            -- Note: name in 3.3.5 might be "Name-Server", we strip it for the internal key
             local shortName = self:GetShortName(name)
             if shortName ~= UnitName("player") then
                 self.sync_status[shortName] = { status = "Waiting...", class = class }
@@ -53,9 +52,31 @@ function Stautist:StartGuildSync()
     end
 
     self:LogSync("Pinging " .. onlineCount .. " members...")
-    -- Send PING with our version
-    local payload = AceSerializer:Serialize("PING", self.VERSION)
+
+    -- NEW: Package MY data to include in the PING
+    local myData = {}
+    local _, myClass = UnitClass("player")
+    local myName = UnitName("player")
+    if self.db.global.run_history then
+        for _, run in ipairs(self.db.global.run_history) do
+            if run.success and run.total_time and run.zone_id then
+                local key = run.zone_id .. "_" .. (run.difficulty or "Normal")
+                if not myData[myName] then myData[myName] = {} end
+                if not myData[myName][key] or run.total_time < myData[myName][key].t then
+                    myData[myName][key] = {
+                        z = run.zone_id, d = run.difficulty or "Normal",
+                        t = run.total_time, dt = run.date,
+                        l = self:GetMaxLevel(run.roster), s = run.size or 5, c = myClass
+                    }
+                end
+            end
+        end
+    end
+
+    -- Send PING with Version AND Data
+    local payload = AceSerializer:Serialize("PING", self.VERSION, myData)
     self:SendCommMessage(self.COMM_PREFIX, payload, "GUILD")
+    
     self:UpdateSyncLogDisplay()
     self:ScheduleTimer("FinishGuildSync", 5)
 end
@@ -91,15 +112,11 @@ function Stautist:OnCommReceived(prefix, message, distribution, sender)
     sender = self:GetShortName(sender)
     if sender == UnitName("player") then return end 
 
-    -- We now expect success, type, remoteVersion, and then the data
     local success, type, remoteVersion, data = AceSerializer:Deserialize(message)
     if not success then return end
 
-    -- Handle Version Check
-    if self.sync_status[sender] then
-        -- Store the version they are using
+    if self.sync_status and self.sync_status[sender] then
         self.sync_status[sender].version = remoteVersion 
-        
         if remoteVersion ~= self.VERSION then
             self.sync_status[sender].status = "|cffff0000Outdated|r"
             self:UpdateSyncLogDisplay()
@@ -108,11 +125,15 @@ function Stautist:OnCommReceived(prefix, message, distribution, sender)
     end
 
     if type == "PING" then
-    if UnitAffectingCombat("player") then
-        -- FIX: Added self.VERSION to the BUSY reply
-        local reply = AceSerializer:Serialize("BUSY", self.VERSION)
-        self:SendCommMessage(self.COMM_PREFIX, reply, "WHISPER", sender)
-    else
+        -- NEW: If the Pinger sent data, process it now!
+        if data and type(data) == "table" then
+            self:ProcessIncomingData(sender, data)
+        end
+
+        if UnitAffectingCombat("player") then
+            local reply = AceSerializer:Serialize("BUSY", self.VERSION)
+            self:SendCommMessage(self.COMM_PREFIX, reply, "WHISPER", sender)
+        else
             self:ScheduleTimer(function() self:SendMyData(sender) end, math.random(0.1, 1.5))
         end
     elseif type == "BUSY" then
@@ -123,7 +144,6 @@ function Stautist:OnCommReceived(prefix, message, distribution, sender)
     elseif type == "DATA" then
         if self.sync_status[sender] then
             self.sync_status[sender].status = "|cff00ff00Success|r"
-            -- Data is the 4th return from Deserialize now
             self:ProcessIncomingData(sender, data)
             self:UpdateSyncLogDisplay()
         end
